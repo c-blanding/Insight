@@ -2,3 +2,15 @@
 __pycache__/
 .idea/
 .langgraph_api/
+.insight_auth/
+.insight_media/
+.playwright-mcp/
+runs/
+*_snapshot*
+*snapshot*.yml
+*snapshot*.yaml
+auth-state.json
+storage-state-*.json
+.neon
+node_modules/
+.agents

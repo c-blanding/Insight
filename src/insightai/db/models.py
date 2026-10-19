@@ -1,0 +1,175 @@
+"""SQLAlchemy ORM models for project tables."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Index, Integer, LargeBinary, Text, func, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class AuthSession(Base):
+    """Encrypted Playwright storage-state blob keyed by profile_id."""
+
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        Index("auth_sessions_expires_at_idx", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    profile_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RunArtifact(Base):
+    """Metadata for screenshot and video evidence in object storage."""
+
+    __tablename__ = "run_artifacts"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('screenshot', 'video')",
+            name="run_artifacts_kind_check",
+        ),
+        Index("run_artifacts_thread_step_idx", "thread_id", "step"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    step: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket: Mapped[str] = mapped_column(Text, nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    byte_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class RunLog(Base):
+    """Console, network, snapshot, and info logs for a QA run (text, not blobs)."""
+
+    __tablename__ = "run_logs"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('console', 'network', 'info', 'snapshot')",
+            name="run_logs_kind_check",
+        ),
+        Index("run_logs_thread_step_idx", "thread_id", "step"),
+        Index("run_logs_thread_kind_idx", "thread_id", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    step: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class RunEvent(Base):
+    """Ordered action / timeline event for a QA run (structured breadcrumbs)."""
+
+    __tablename__ = "run_events"
+    __table_args__ = (
+        Index("run_events_thread_created_idx", "thread_id", "created_at"),
+        Index("run_events_thread_step_idx", "thread_id", "step"),
+        Index("run_events_thread_type_idx", "thread_id", "event_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    step: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    tool: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'ok'"))
+    ref_kind: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ref_bucket: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ref_object_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class Run(Base):
+    """Persisted QA run: inputs, plan, findings, and assembled timeline snapshot."""
+
+    __tablename__ = "runs"
+    __table_args__ = (
+        Index("runs_created_at_idx", "created_at"),
+        Index("runs_url_idx", "url"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    bug_description: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_behavior: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    plan: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    step_findings: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    timeline: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    report: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    completed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
