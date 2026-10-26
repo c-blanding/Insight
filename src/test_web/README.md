@@ -15,7 +15,7 @@ Then open http://localhost:5500
 Or from the repo root:
 
 ```bash
-python -m http.server 5500 --directory insight/test_web
+python -m http.server 5500 --directory src/test_web
 ```
 
 ## Pages
