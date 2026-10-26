@@ -1,0 +1,74 @@
+[
+  {
+    "id": "TL-01",
+    "url": "http://localhost:5501/",
+    "bug_description": "Description does not persist. Use Quick edit on Build the pricing page. Replace its description with QA persistence check and save. Verify it in the card, then reload the page.",
+    "expected_behavior": "The updated description survives reload."
+  },
+  {
+    "id": "TL-02",
+    "url": "http://localhost:5501/tasks.html",
+    "bug_description": "Due dates sort alphabetically. Reset. Open All tasks (tasks.html) and choose Due date \u2191. Inspect the first page.",
+    "expected_behavior": "Dates start Oct 21, Oct 22, Oct 23, Oct 23, Oct 27 in chronological order."
+  },
+  {
+    "id": "TL-03",
+    "url": "http://localhost:5501/",
+    "bug_description": "Combining filters broadens the result. Reset. Select Ethan Zins as assignee and Done as status.",
+    "expected_behavior": "Only Define project milestones and Set up the repository appear (2 tasks)."
+  },
+  {
+    "id": "TL-04",
+    "url": "http://localhost:5501/",
+    "bug_description": "Cancel commits a priority change. Reset. Use Quick edit on Map the onboarding journey. Change Priority from Medium to High. Click Cancel; reopen the task or inspect the card.",
+    "expected_behavior": "Priority stays Medium because the edit was canceled."
+  },
+  {
+    "id": "TL-05",
+    "url": "http://localhost:5501/",
+    "bug_description": "Edited due date moves back one day. Reset. Use Quick edit on Build the pricing page. Change Due date from 2026-10-30 to 2026-11-05 and save. Reopen the task.",
+    "expected_behavior": "Due date remains 2026-11-05."
+  },
+  {
+    "id": "TL-06",
+    "url": "http://localhost:5501/tasks.html",
+    "bug_description": "Next page repeats the first page. Reset. Open All tasks (tasks.html). Note the first five task titles. Click Next.",
+    "expected_behavior": "Page 2 shows tasks 6\u201310, starting with Test mobile navigation."
+  },
+  {
+    "id": "TL-07",
+    "url": "http://localhost:5501/",
+    "bug_description": "Drag changes column but not task status. Reset. Drag Map the onboarding journey from To do into In progress. Open the moved card and inspect Status.",
+    "expected_behavior": "The task\u2019s status is In progress in the board, details, and List."
+  },
+  {
+    "id": "TL-08",
+    "url": "http://localhost:5501/",
+    "bug_description": "Bulk archive affects unselected tasks. Reset. Check only Map the onboarding journey and click Archive selected. Open Archive.",
+    "expected_behavior": "Only that one task is archived; 11 tasks remain active."
+  },
+  {
+    "id": "TL-09",
+    "url": "http://localhost:5501/",
+    "bug_description": "Active-project summary includes archived tasks. Reset. Use Quick edit on Define project milestones and click Archive in its details. Inspect project summary and sidebar count.",
+    "expected_behavior": "Active Total tasks is 11 and Completed is 3."
+  },
+  {
+    "id": "TL-10",
+    "url": "http://localhost:5501/",
+    "bug_description": "Clear filters leaves assignee selected. Reset. Select Alex Morgan in All assignees. Click Clear filters.",
+    "expected_behavior": "All 12 active tasks return and the assignee selector returns to All assignees."
+  },
+  {
+    "id": "TL-11",
+    "url": "http://localhost:5501/",
+    "bug_description": "Escape does not close task details. Reset. Click Quick edit on any board task to open its dialog and press Escape.",
+    "expected_behavior": "Escape dismisses the dialog without saving edits."
+  },
+  {
+    "id": "TL-12",
+    "url": "http://localhost:5501/",
+    "bug_description": "Another tab keeps stale task data. Reset. Open the app in two tabs in the same browser context. In tab A use Quick edit to change Build the pricing page title to Pricing page ready and save. Return to tab B and inspect the card. Then reload tab B.",
+    "expected_behavior": "The already-open second tab updates to the saved title without a manual reload."
+  }
+]

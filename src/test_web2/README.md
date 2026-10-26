@@ -53,24 +53,19 @@ Some of these features deliberately behave incorrectly. This is a test fixture, 
 ## Files
 
 ```text
-Taskline/
+Test_web2/
   README.md
-  start-windows.bat
   agent-inputs.json
-  human_only/
-    BUGS.md
-    scorecard.csv
-    VERIFICATION.md
-  test_web/
-    index.html
-    tasks.html
-    my-tasks.html
-    archive.html
-    task.html
-    assets/
-      styles.css
-      data.js
-      app.js
+  index.html
+  tasks.html
+  my-tasks.html
+  archive.html
+  task.html
+  BUGS.md
+  assets/
+    styles.css
+    data.js
+    app.js
 ```
 
 `test_web` is the only directory that should be served. `human_only` is for evaluators, not the QA agent. Source code naturally contains implementations of the defects; restrict the agent to the browser if testing UI-only discovery.
@@ -95,7 +90,7 @@ Examples include descriptions reverting after reload, filters failing in combina
 
 ## Scoring
 
-Use `human_only/BUGS.md` and `human_only/scorecard.csv` yourself. Do not feed either to Insight. For UI-only runs, score reproduction and evidence separately from a root-cause hypothesis. A UI symptom alone does not prove an exact code-level root cause.
+Use `BUGS.md` yourself. Do not feed either to Insight. For UI-only runs, score reproduction and evidence separately from a root-cause hypothesis. A UI symptom alone does not prove an exact code-level root cause.
 
 ## Reset and storage
 
