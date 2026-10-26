@@ -9,10 +9,10 @@ Requires Python 3 and a modern browser. No npm install, database, API keys, or e
 From this directory:
 
 ```bash
-python -m http.server 5501 --bind 127.0.0.1 --directory test_web
+python -m http.server 5501 --bind 127.0.0.1 --directory src/test_web2
 ```
 
-On Windows, `py -3` can replace `python`. You can also double-click `start-windows.bat`.
+On Windows, `py -3` can replace `python`.
 
 Open **http://localhost:5501/**. Keep the terminal open; press Ctrl+C to stop.
 
