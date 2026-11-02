@@ -398,7 +398,7 @@ Authenticated tests may use an optional `auth_profile_id`. That name is not a se
 
 **Login wall (Continue button)**
 
-Auth is not requested up front. If a plan step hits a login page, the executor sets `error` to `auth_expired` without completing the step. The graph routes to `wait_for_login`, which calls LangGraph `interrupt` so Studio (or your frontend / `InsightAgent.acontinue`) can show **Continue**. Sign in in the headed Playwright window, then Continue with an empty resume or `{ "confirmed": true }` — never the password. After resume the node exports the browser storage state, encrypts it into Postgres, sets `auth_profile_id` if missing, and retries the same step.
+Auth is not requested up front. If a plan step hits a login page, the executor sets `error` to `auth_expired` without completing the step. The graph routes to `wait_for_login`, which calls LangGraph `interrupt` so Studio (or your frontend / `InsightAgent.acontinue`) can show **Continue**. Sign in in the headed Playwright window, then Continue with an empty resume or `{ "confirmed": true }` — never the password. After resume the node exports the browser storage state and retries the same step. When auth storage is configured, it also encrypts the captured state into Postgres for later runs. Without auth storage, the signed-in browser remains available for the current run, but the session is not saved for future runs.
 
 **What must stay out of the graph**
 
@@ -425,11 +425,11 @@ You can still pre-save a session without waiting for a login wall:
 .\.venv\Scripts\python.exe -m insightai.auth.capture revoke --profile my-app
 ```
 
-If `auth_profile_id` is set and a matching unexpired row exists, the shared Playwright client restores it once before the model runs. Changing `AUTH_DATA_KEY` does not re-encrypt old rows; revoke and save again.
+The capture command reads `.env`, saves the session, and then closes its browser when it exits. A later agent run opens a browser and restores the saved session. Set `auth_profile_id` to the same profile name (`my-app` in the example) so it can find that session. For a single run that signs in and then continues using the same open browser, use the graph's Continue login flow instead of the separate capture command. Changing `AUTH_DATA_KEY` does not re-encrypt old rows; revoke and save again.
 
 **Limits**
 
-Playwright storage state covers cookies and `localStorage` only. Sessions that live only in `sessionStorage` are not restored. LumenShop’s login redirects on success but does not set a cookie or `localStorage`, so a capture for that demo is rejected until the site under test actually stores a session. `interrupt` requires a checkpointer (provided by `langgraph dev` / Studio, or by `InsightAgent`).
+Playwright storage state covers cookies and `localStorage` only. Sessions that live only in `sessionStorage` are not restored. The LumenShop static test fixture sets a demo cookie and `localStorage` marker on successful sign-in so Continue can capture it. `interrupt` requires a checkpointer (provided by `langgraph dev` / Studio, or by `InsightAgent`).
 
 ## Run evidence (screenshots, video, console, network, snapshots)
 

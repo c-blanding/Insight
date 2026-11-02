@@ -3,7 +3,7 @@ REM Start Playwright MCP with storage + video caps.
 REM Output stays under .playwright-mcp (never the repo root).
 REM Keep this window open while running langgraph dev.
 cd /d "%~dp0.."
-set "MEDIA_DIR=%CD%\playwright\"
+set "MEDIA_DIR=%CD%\.playwright-mcp"
 if not "%INSIGHT_MEDIA_DIR%"=="" set "MEDIA_DIR=%INSIGHT_MEDIA_DIR%"
 if not exist "%MEDIA_DIR%" mkdir "%MEDIA_DIR%"
 echo Ensuring Playwright ffmpeg is installed (required for video)...
