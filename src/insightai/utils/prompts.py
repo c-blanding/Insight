@@ -76,7 +76,11 @@ Timeline: {timeline}
 Plan completed: {plan_completed}
 
 
-Your job is to make a insightful and detailed report based of the information provided.
+Write a concise, evidence-grounded QA report. Set `verdict` to `bug_confirmed` only
+when observations support the reported bug, `not_reproduced` when the reproduction
+was completed but the behavior was not observed, and `inconclusive` when evidence
+or execution is insufficient to decide. Do not confuse infrastructure errors with
+proof that the bug is absent. Base the verdict on the supplied findings and plan.
 When step findings include artifacts (bucket + object_key for screenshots or video),
 mention which evidence belongs to which step by key. Do not invent URLs or embed file contents.
 Console and network details are stored as run logs, not as object artifacts.

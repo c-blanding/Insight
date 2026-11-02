@@ -29,7 +29,14 @@ from insightai.evidence.session import normalize_thread_id, release
 from insightai.runtime_paths import playwright_mcp_url
 from insightai.utils.edges import insight_after_execute
 from insightai.utils.nodes import create_plan, execute_plan, finalize_report, wait_for_login
-from insightai.utils.objects import Plan, Report, StepFindings, Timeline
+from insightai.utils.objects import (
+    Plan,
+    Report,
+    StepFindings,
+    Timeline,
+    summarize_evidence,
+    summarize_run_status,
+)
 from insightai.utils.states import InsightGraphState
 
 load_dotenv()
@@ -58,6 +65,8 @@ _FORBIDDEN_KEY_RE = re.compile(
 )
 _DEFAULT_MAX_TOOLS_TURNS = 30
 _MAX_TOOLS_TURNS_CAP = 200
+_DEFAULT_RUN_TIMEOUT_SECONDS = 900.0
+_MAX_RUN_TIMEOUT_SECONDS = 3600.0
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +102,8 @@ class InsightResult:
     auth_profile_id: Optional[str] = None
     error: Optional[str] = None
     completed: bool = False
+    run_status: Literal["completed", "failed", "cancelled", "unknown"] = "unknown"
+    evidence_status: Literal["available", "partial", "unavailable", "unknown"] = "unknown"
     state: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -243,6 +254,12 @@ class InsightAgent:
             raise InsightInputError(
                 f"url must be an absolute http(s) URL, got {url!r}"
             )
+        from insightai.target_policy import TargetPolicyError, validate_target_url
+
+        try:
+            validate_target_url(url)
+        except TargetPolicyError as exc:
+            raise InsightInputError(f"Target URL rejected by policy: {exc}") from exc
 
         max_turns = state.get("max_tools_turns", _DEFAULT_MAX_TOOLS_TURNS)
         try:
@@ -312,11 +329,13 @@ class InsightAgent:
         check_mcp: bool = True,
     ) -> InsightOutcome:
         """Run the full pipeline. Returns ``InsightResult`` or ``NeedsLogin``."""
-        cleaned = self.validate_input(state)
+        cleaned = await asyncio.to_thread(self.validate_input, state)
         if check_mcp:
             await asyncio.to_thread(self._check_mcp)
         tid, run_config = self._config(thread_id, extra=config)
-        return await self._ainvoke(cleaned, tid, run_config, timeout=timeout)
+        return await self._ainvoke(
+            cleaned, tid, run_config, timeout=self._bounded_timeout(timeout)
+        )
 
     async def acontinue(
         self,
@@ -356,8 +375,21 @@ class InsightAgent:
             Command(resume=payload),
             tid,
             run_config,
-            timeout=timeout,
+            timeout=self._bounded_timeout(timeout),
         )
+
+    @staticmethod
+    def _bounded_timeout(timeout: float | None) -> float:
+        """Return a finite run deadline, clamped to the supported maximum."""
+        if timeout is None:
+            return _DEFAULT_RUN_TIMEOUT_SECONDS
+        try:
+            value = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise InsightInputError("timeout must be a positive number") from exc
+        if value <= 0:
+            raise InsightInputError("timeout must be a positive number")
+        return min(value, _MAX_RUN_TIMEOUT_SECONDS)
 
     def run(self, state: dict[str, Any], **kwargs: Any) -> InsightOutcome:
         """Sync wrapper around ``arun`` (not for use inside a running event loop)."""
@@ -375,17 +407,24 @@ class InsightAgent:
         config: RunnableConfig | None = None,
         check_mcp: bool = True,
         stream_mode: Literal["updates", "values"] = "updates",
+        timeout: float | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield graph progress chunks (node updates by default)."""
-        cleaned = self.validate_input(state)
+        cleaned = await asyncio.to_thread(self.validate_input, state)
         if check_mcp:
             await asyncio.to_thread(self._check_mcp)
         tid, run_config = self._config(thread_id, extra=config)
         try:
-            async for chunk in self._graph.astream(
-                cleaned, run_config, stream_mode=stream_mode
-            ):
-                yield {"thread_id": tid, "chunk": chunk}
+            async with asyncio.timeout(self._bounded_timeout(timeout)):
+                async for chunk in self._graph.astream(
+                    cleaned, run_config, stream_mode=stream_mode
+                ):
+                    yield {"thread_id": tid, "chunk": chunk}
+        except TimeoutError as exc:
+            await self._cleanup(tid)
+            raise InsightAgentError(
+                f"Run timed out after {self._bounded_timeout(timeout)}s (thread_id={tid})"
+            ) from exc
         except BaseException:
             await self._cleanup(tid)
             raise
@@ -464,6 +503,10 @@ class InsightAgent:
         plan = state.get("plan")
         report = state.get("report")
         findings = state.get("step_findings") or []
+        typed_findings = [
+            item if isinstance(item, StepFindings) else StepFindings.model_validate(item)
+            for item in findings
+        ]
         timeline = state.get("timeline")
 
         # Prefer assembled timeline from DB when not already on state
@@ -476,29 +519,36 @@ class InsightAgent:
                 logger.debug("timeline assemble skipped", exc_info=True)
                 timeline = None
 
+        error = state.get("error")
+        completed = bool(state.get("completed")) or report is not None
+        report_model = report if isinstance(report, Report) else (
+            Report.model_validate(report) if report else None
+        )
+        run_status = state.get("run_status")
+        if run_status not in {"completed", "failed", "cancelled", "unknown"}:
+            run_status = summarize_run_status(error, completed)
+        evidence_status = state.get("evidence_status")
+        if evidence_status not in {"available", "partial", "unavailable", "unknown"}:
+            evidence_status = summarize_evidence(typed_findings)
+
         return InsightResult(
             thread_id=thread_id,
             url=str(state.get("url") or ""),
             bug_description=str(state.get("bug_description") or ""),
-            report=report if isinstance(report, Report) else (
-                Report.model_validate(report) if report else None
-            ),
+            report=report_model,
             plan=plan if isinstance(plan, Plan) else (
                 Plan.model_validate(plan) if plan else None
             ),
-            step_findings=[
-                item
-                if isinstance(item, StepFindings)
-                else StepFindings.model_validate(item)
-                for item in findings
-            ],
+            step_findings=typed_findings,
             timeline=timeline
             if timeline is None or isinstance(timeline, Timeline)
             else Timeline.model_validate(timeline),
             expected_behavior=state.get("expected_behavior"),
             auth_profile_id=state.get("auth_profile_id"),
-            error=state.get("error"),
-            completed=bool(state.get("completed")) or report is not None,
+            error=error,
+            completed=completed,
+            run_status=run_status,
+            evidence_status=evidence_status,
             state=dict(state),
         )
 

@@ -7,6 +7,7 @@ Evidence (screenshots, video, console/network/snapshot logs, timeline events) an
 **Programmatic entry point:** [`InsightAgent`](src/insightai/agent.py) (`arun` / `acontinue`).  
 **Studio entry point:** graph id `insightaiagent` via [`insightaiagent_graph.py`](src/insightai/insightaiagent_graph.py).  
 **FastAPI integration notes:** [`docs/FASTAPI_HANDOFF.md`](docs/FASTAPI_HANDOFF.md).  
+**MVP scope and deployment assumptions:** [`docs/PRODUCT_SCOPE.md`](docs/PRODUCT_SCOPE.md).
 
 ## Pipeline
 
@@ -85,6 +86,11 @@ Outcomes:
 
 - **`NeedsLogin`** — paused for human Continue (`thread_id`, `message`, `login_url`, `origin`, `auth_profile_id`)
 - **`InsightResult`** — terminal state (`report`, `plan`, `step_findings`, `timeline`, `error`, `completed`, `ok`)
+
+Terminal results expose `run_status` (`completed`, `failed`, `cancelled`, or `unknown`),
+`evidence_status` (`available`, `partial`, `unavailable`, or `unknown`), and a report
+`verdict` (`bug_confirmed`, `not_reproduced`, or `inconclusive`). The verdict is based
+on browser evidence; infrastructure failure is represented separately by `error`.
 
 Never put passwords, cookies, or storage-state JSON in `arun` / `acontinue` payloads — validation rejects those keys.
 
@@ -216,6 +222,17 @@ and runs continue with no recording. For hosted / sidecar deploys set `PLAYWRIGH
 to the MCP HTTP URL and point both processes at the same absolute `INSIGHT_MEDIA_DIR`
 (and Neon `DATABASE_URL` / `AWS_*` for durable evidence). Local files under
 `.playwright-mcp` are removed when the graph finishes and uploads succeed.
+
+Browser target policy checks the scheme, embedded credentials, hostname, port, and
+all DNS answers before planning and immediately before `browser_navigate`. Public
+targets must be listed in `INSIGHT_ALLOWED_TARGET_HOSTS`. Non-public IP destinations
+are rejected unless their exact hostname is listed in `INSIGHT_LOCAL_TARGETS`. DNS is
+rechecked on each explicit navigation. Browser-level redirects are not yet blocked
+before Chromium follows them. This is a known limitation of the local, human-supervised
+MVP; run it only against applications you are authorized to test. Revisit network-level
+redirect enforcement before supporting hosted runs against untrusted targets. Per-run
+execution defaults to 15 minutes, MCP calls to 60 seconds, and local evidence to 512 MiB;
+these limits are configurable in `.env.example`.
 
 Run the LangGraph dev server:
 
@@ -363,6 +380,10 @@ python -m http.server 5500 --directory src/test_web
 See `src/test_web/README.md` for run instructions and sample bug scenarios; `BUGS.md` lists planted defects for scoring runs.
 
 ## Development notes
+
+Run the isolated agent contract checks with `python -m unittest discover -s tests`.
+Existing package-local auth and evidence checks can be run with
+`python -m unittest discover -s src -p 'test_*.py'`.
 
 - Default chat model: `gpt-4o` in `src/insightai/utils/model.py` (override with `OPENAI_MODEL`).
 - Do not add a top-level Python package named `mcp` under the agent source tree; it shadows the official MCP SDK. This repo uses `mcp_clients/`.
