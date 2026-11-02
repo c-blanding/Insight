@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+.env
+.env.*
+!.env.example
+.playwright-mcp
+.langgraph_api
+.insight_auth
+.insight_media
+node_modules
+dist
+build
