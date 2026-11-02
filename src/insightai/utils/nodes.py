@@ -1,4 +1,6 @@
 import json
+import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -25,7 +27,15 @@ from insightai.evidence.capture import capture_console
 from insightai.mcp_clients.playwright import PlaywrightToolError
 from insightai.utils.edges import AUTH_EXPIRED
 from insightai.utils.model import llm
-from insightai.utils.objects import ArtifactRef, Plan, Report, StepFindings
+from insightai.utils.objects import (
+    ArtifactRef,
+    Plan,
+    Report,
+    StepFindings,
+    normalize_report_verdict,
+    summarize_evidence,
+    summarize_run_status,
+)
 from insightai.utils.prompts import auth_note, execute_plan_prompt, plan_intruction_prompt, report_prompt
 from insightai.utils.states import CreateGraphState, ExecutionState, InsightGraphState, ReportState
 
@@ -79,6 +89,57 @@ def _needs_login(message: str) -> InsightGraphState:
         "completed": False,
         "error": AUTH_EXPIRED,
     }
+
+
+_SENSITIVE_URL_PARAMETER = re.compile(
+    r"(?:token|secret|password|passwd|auth|credential|session|cookie|signature|^sig$|^code$|^state$|^key$|^jwt$)",
+    re.IGNORECASE,
+)
+
+
+def _safe_resume_url(value: str | None, fallback: str) -> str:
+    """Keep a navigable URL while removing credentials and auth query values."""
+    candidate = (value or "").strip() or fallback
+    try:
+        parts = urlsplit(candidate)
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            raise ValueError("URL must be HTTP(S)")
+        host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+        netloc = f"{host}:{parts.port}" if parts.port is not None else host
+        query = urlencode(
+            [
+                (key, item)
+                for key, item in parse_qsl(parts.query, keep_blank_values=True)
+                if not _SENSITIVE_URL_PARAMETER.search(key)
+            ]
+        )
+        return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
+    except (TypeError, ValueError):
+        if candidate != fallback:
+            return _safe_resume_url(fallback, fallback)
+        return fallback
+
+
+async def _current_page_url(playwright, fallback: str) -> str:
+    """Read the active page URL through Playwright MCP without exposing secrets."""
+    try:
+        result = await playwright.call_mcp(
+            "browser_evaluate", {"function": "() => window.location.href"}
+        )
+        content = getattr(result, "content", None) or []
+        for item in content:
+            text = getattr(item, "text", None)
+            if isinstance(text, str) and text.strip():
+                # MCP evaluate results may wrap the returned string as JSON.
+                try:
+                    value = json.loads(text)
+                except json.JSONDecodeError:
+                    value = text.strip().strip('"')
+                if isinstance(value, str):
+                    return _safe_resume_url(value, fallback)
+    except Exception:
+        pass
+    return _safe_resume_url(fallback, fallback)
 
 def create_plan(state: CreateGraphState) -> ExecutionState:
     url = state["url"]
@@ -234,9 +295,13 @@ async def execute_plan(
     harness_artifacts = evidence_context.take_artifacts()
     evidence_context.clear_step()
     if (findings.error or "").strip() == AUTH_EXPIRED:
+        login_url = await _current_page_url(playwright, url)
         harness_artifacts = [
             a for a in harness_artifacts if a.get("kind") != "screenshot"
         ]
+    # Artifacts returned by the model are untrusted; only the evidence harness
+    # can establish durable object-storage references.
+    findings = findings.model_copy(update={"artifacts": []})
     findings = _merge_artifacts(findings, harness_artifacts)
     findings = _redact_findings(findings)
     try:
@@ -270,6 +335,7 @@ async def execute_plan(
             "plan": plan,
             "completed": False,
             "error": AUTH_EXPIRED,
+            "login_url": login_url,
             "tools_turns": tools_turns + 1,
         }
 
@@ -308,6 +374,7 @@ async def wait_for_login(
     """
     thread_id = thread_id_from_config(config)
     url = state["url"]
+    login_url = _safe_resume_url(state.get("login_url"), url)
     try:
         origin = normalize_origin(url)
     except StorageStateError as exc:
@@ -316,15 +383,28 @@ async def wait_for_login(
 
     profile_id = (state.get("auth_profile_id") or "").strip() or default_profile_id(url)
 
+    # A restarted process has no held browser session. Recreate it and open the
+    # checkpointed login page before interrupting, so the user can sign in.
+    try:
+        playwright, created = await session_for(thread_id, with_status=True)
+        if created:
+            await playwright.call_mcp("browser_navigate", {"url": login_url})
+    except ConnectionError as exc:
+        await release(thread_id, finished=True)
+        return _stopped(str(exc), "mcp_unreachable")
+    except PlaywrightToolError as exc:
+        await release(thread_id, finished=True)
+        return _stopped(str(exc), exc.code)
+
     resume = interrupt(
         {
             "type": "auth_login",
             "message": (
                 "A login page appeared. Sign in in the headed Playwright browser "
-                f"(use {url} if the window is blank), then click Continue. "
+                f"(use {login_url} if the window is blank), then click Continue. "
                 "Do not type the password into this chat or the resume payload."
             ),
-            "login_url": url,
+            "login_url": login_url,
             "origin": origin,
             "auth_profile_id": profile_id,
         }
@@ -334,7 +414,6 @@ async def wait_for_login(
         return _stopped("Sign-in was cancelled", "auth_cancelled")
 
     try:
-        playwright = await session_for(thread_id)
         await persist_open_browser_session(
             playwright,
             profile_id=profile_id,
@@ -378,22 +457,43 @@ def finalize_report(
         redact_secrets(item.model_dump()) if hasattr(item, "model_dump") else redact_secrets(item)
         for item in findings
     ]
+    plan = state.get("plan")
+    plan_completed = bool(plan and plan.completed)
+    timeline = state.get("timeline")
+    if timeline is None:
+        try:
+            from insightai.evidence.timeline import assemble_timeline
+
+            timeline = assemble_timeline(thread_id_from_config(config))
+        except Exception:
+            timeline = None
     report = report_llm.invoke(
         report_prompt.format(
             step_findings=safe_findings,
             expected_behavior=state.get("expected_behavior"),
             url=state.get("url"),
             bug=state.get("bug_description"),
-            timeline=state.get("timeline"),
-            plan_completed=state.get("plan").completed,
+            timeline=timeline,
+            plan_completed=plan_completed,
         )
+    )
+    run_status = summarize_run_status(state.get("error"), bool(state.get("completed")))
+    evidence_status = summarize_evidence(findings, timeline)
+    report = report.model_copy(
+        update={
+            "verdict": normalize_report_verdict(
+                report.verdict, run_status, plan_completed
+            ),
+            "run_status": run_status,
+            "evidence_status": evidence_status,
+        }
     )
 
     try:
         from insightai.evidence.runs import save_run_from_state
 
         save_run_from_state(
-            dict(state),
+            {**dict(state), "timeline": timeline},
             config=config,
             report=report,
             completed=True,
@@ -406,5 +506,9 @@ def finalize_report(
             exc_info=True,
         )
 
-    return {"report": report}
+    return {
+        "report": report,
+        "run_status": run_status,
+        "evidence_status": evidence_status,
+    }
 

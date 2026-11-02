@@ -10,6 +10,7 @@ class InsightGraphState(TypedDict):
     """State of the InsightGraph"""
     bug_description: str
     url: str
+    login_url: NotRequired[Optional[str]]
     auth_profile_id: NotRequired[Optional[str]]
     expected_behavior: NotRequired[Optional[str]]
     plan: NotRequired[Plan]
@@ -19,6 +20,8 @@ class InsightGraphState(TypedDict):
     error: NotRequired[Optional[str]]
     step_findings: NotRequired[Annotated[list[StepFindings], operator.add]]
     completed: NotRequired[bool]
+    run_status: NotRequired[str]
+    evidence_status: NotRequired[str]
     report: NotRequired[Report]
     timeline: NotRequired[Timeline]
 
@@ -36,6 +39,7 @@ class ExecutionState(TypedDict):
     plan: Plan
     bug_description: str
     url: str
+    login_url: NotRequired[Optional[str]]
     auth_profile_id: NotRequired[Optional[str]]
     current_step: int
     max_tools_turns: int
