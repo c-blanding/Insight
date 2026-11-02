@@ -3,11 +3,17 @@ REM Start Playwright MCP with storage + video caps.
 REM Output stays under .playwright-mcp (never the repo root).
 REM Keep this window open while running langgraph dev.
 cd /d "%~dp0.."
-set "MEDIA_DIR=%CD%\.playwright-mcp"
+set "MEDIA_DIR=%CD%\playwright\"
 if not "%INSIGHT_MEDIA_DIR%"=="" set "MEDIA_DIR=%INSIGHT_MEDIA_DIR%"
 if not exist "%MEDIA_DIR%" mkdir "%MEDIA_DIR%"
 echo Ensuring Playwright ffmpeg is installed (required for video)...
 call npx --yes playwright install ffmpeg
 echo Starting Playwright MCP on :8931
 echo output-dir=%MEDIA_DIR%
-npx --yes @playwright/mcp@latest --port 8931 --caps=storage,devtools --isolated --output-dir "%MEDIA_DIR%"
+if /i "%INSIGHT_SHOW_BROWSER_CURSOR%"=="1" (
+    echo AI cursor overlay enabled
+    npx --yes @playwright/mcp@0.0.84 --port 8931 --caps=storage,devtools --isolated --output-dir "%MEDIA_DIR%" --init-script "%~dp0playwright-cursor.js"
+) else (
+    echo AI cursor overlay disabled. Set INSIGHT_SHOW_BROWSER_CURSOR=1 to enable it.
+    npx --yes @playwright/mcp@0.0.84 --port 8931 --caps=storage,devtools --isolated --output-dir "%MEDIA_DIR%"
+)

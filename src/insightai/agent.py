@@ -182,7 +182,7 @@ class InsightAgent:
         *,
         checkpointer: BaseCheckpointSaver | None = None,
         mcp_url: str | None = None,
-        require_database: bool = True,
+        require_database: bool = False,
         preflight: bool = True,
     ) -> None:
         self._checkpointer = checkpointer if checkpointer is not None else MemorySaver()
