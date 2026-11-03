@@ -22,6 +22,8 @@ dependencies = [
     "langgraph-cli[inemem,inmem]>=0.4.31",
     "fastmcp>=4.0.5",
     "fastmcp-slim[client]>=4.0.5",
+    "fastapi>=0.162.0",
+    "jinja2>=3.1.6",
 ]
 
 [project.scripts]
