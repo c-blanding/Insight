@@ -36,3 +36,24 @@ def insight_after_execute(
     if route == "done":
         return "finalize_report"
     return route
+
+
+def after_wait_for_login(
+    state: InsightGraphState,
+) -> Literal["execute_plan", "done"]:
+    """Continue the plan only when login succeeded; otherwise end the run."""
+    if state.get("completed") or state.get("error"):
+        return "done"
+    return "execute_plan"
+
+
+def insight_after_login(
+    state: InsightGraphState,
+) -> Literal["execute_plan", "finalize_report"]:
+    return "finalize_report" if after_wait_for_login(state) == "done" else "execute_plan"
+
+
+def execute_after_login(
+    state: InsightGraphState,
+) -> Literal["execute_plan", END]:
+    return END if after_wait_for_login(state) == "done" else "execute_plan"
