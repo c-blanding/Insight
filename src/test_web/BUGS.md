@@ -25,6 +25,7 @@ Do not feed this file to the QA agent. Use it to score whether the agent found t
 | 19 | Home clicks | CTA sometimes hard to click | Absolute `.overlay-bug` sits over action buttons |
 | 20 | Login link | Forgot password 404s | `href="/reset-password"` missing page |
 | 21 | Mobile nav | Clicks miss targets near the right edge | Closed drawer uses near-zero opacity but `pointer-events: auto` |
+| 22 | Rewards redemption | Redeeming 100 points reduces the balance by 150 | Handler subtracts 150 instead of 100 |
 
 ## Suggested verification order for agents
 

@@ -27,12 +27,13 @@ python -m http.server 5500 --directory src/test_web
 | `/cart.html` | Qty controls, remove, totals |
 | `/checkout.html` | Checkout form + payment POST |
 | `/login.html` | Auth errors + post-login redirect |
+| `/rewards.html` | Sign-in protected rewards page with a points redemption bug |
 | `/contact.html` | Contact form false success |
 | `/account.html` | Infinite loading state |
 
 ## Auth note
 
-LumenShop prints demo credentials on `/login.html`. A successful sign-in only redirects to `/account` and does not set a cookie or `localStorage`, so session capture for this origin is rejected. Leave `auth_profile_id` off the samples below. See the root README section **Auth sessions and security** for how authenticated runs work against real apps.
+LumenShop prints demo credentials on `/login.html`. Visiting the rewards page while signed out redirects to login and returns there after successful sign-in. The static QA demo stores a non-secret sign-in marker in both `localStorage` and a cookie so browser session capture can exercise the flow. This is a client-side test fixture, not server-side access control. See the root README section **Auth sessions and security** for authenticated runs against real apps.
 
 ## Sample agent inputs
 
@@ -82,5 +83,10 @@ Use these as `url` + `bug_description` / `expected_behavior` for the graph:
    URL: `http://localhost:5500/account.html`  
    Bug: Spinner never goes away.  
    Expected: Profile loads or a clear error is shown.
+
+10. **Rewards redemption subtracts too many points**
+    URL: `http://localhost:5500/rewards.html`
+    Bug: Redeeming 100 points reduces the balance by more than 100.
+    Expected: Balance decreases by exactly 100 points. Sign in with the demo account when prompted.
 
 See [BUGS.md](./BUGS.md) for the full planted-defect list (do not show this file to the agent under test).
