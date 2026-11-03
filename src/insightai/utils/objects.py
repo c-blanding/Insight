@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,16 @@ class Plan(BaseModel):
 
 class Report(BaseModel):
     report: Optional[str] = Field(None, description="Report of the bug")
+    verdict: Literal["bug_confirmed", "not_reproduced", "inconclusive"] = Field(
+        "inconclusive",
+        description="Whether the reported bug was confirmed by browser evidence",
+    )
+    run_status: Literal["completed", "failed", "cancelled", "unknown"] = Field(
+        "unknown", description="Terminal lifecycle status for this run"
+    )
+    evidence_status: Literal["available", "partial", "unavailable", "unknown"] = Field(
+        "unknown", description="Availability of persisted browser evidence"
+    )
 
     @property
     def formatted_report(self) -> str:
@@ -150,12 +160,18 @@ class Run(BaseModel):
     report: Optional[Report] = None
     error: Optional[str] = None
     completed: bool = False
+    run_status: Literal["completed", "failed", "cancelled", "unknown"] = "unknown"
+    evidence_status: Literal["available", "partial", "unavailable", "unknown"] = "unknown"
     id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: Any) -> "Run":
+        report = Report.model_validate(row.report) if row.report else None
+        findings = [
+            StepFindings.model_validate(item) for item in (row.step_findings or [])
+        ]
         return cls(
             id=str(row.id) if getattr(row, "id", None) is not None else None,
             thread_id=row.thread_id,
@@ -163,13 +179,68 @@ class Run(BaseModel):
             url=row.url,
             expected_behavior=row.expected_behavior,
             plan=Plan.model_validate(row.plan) if row.plan else None,
-            step_findings=[
-                StepFindings.model_validate(item) for item in (row.step_findings or [])
-            ],
+            step_findings=findings,
             timeline=Timeline.model_validate(row.timeline) if row.timeline else None,
-            report=Report.model_validate(row.report) if row.report else None,
+            report=report,
             error=row.error,
             completed=bool(row.completed),
+            run_status=(report.run_status if report is not None and report.run_status != "unknown"
+                        else summarize_run_status(row.error, bool(row.completed))),
+            evidence_status=(
+                report.evidence_status
+                if report is not None and report.evidence_status != "unknown"
+                else summarize_evidence(findings)
+            ),
             created_at=row.created_at.isoformat() if row.created_at else None,
             updated_at=row.updated_at.isoformat() if row.updated_at else None,
         )
+
+
+def summarize_run_status(
+    error: str | None, completed: bool,
+) -> Literal["completed", "failed", "cancelled", "unknown"]:
+    if error == "auth_cancelled":
+        return "cancelled"
+    if error:
+        return "failed"
+    return "completed" if completed else "unknown"
+
+
+def normalize_report_verdict(
+    verdict: str,
+    run_status: Literal["completed", "failed", "cancelled", "unknown"],
+    plan_completed: bool,
+) -> Literal["bug_confirmed", "not_reproduced", "inconclusive"]:
+    if run_status != "completed" or not plan_completed:
+        return "inconclusive"
+    if verdict == "bug_confirmed":
+        return "bug_confirmed"
+    if verdict == "not_reproduced":
+        return "not_reproduced"
+    return "inconclusive"
+
+
+def summarize_evidence(
+    findings: list[StepFindings],
+    timeline: Timeline | None = None,
+) -> Literal["available", "partial", "unavailable", "unknown"]:
+    """Summarize durable artifact references across findings and persisted events."""
+    if not findings:
+        return "available" if timeline and timeline.artifacts else "unknown"
+
+    artifact_steps = {
+        index
+        for index, finding in enumerate(findings, start=1)
+        if finding.artifacts
+    }
+    if timeline:
+        artifact_steps.update(
+            artifact.step
+            for artifact in timeline.artifacts
+            if artifact.step is not None
+        )
+    if not artifact_steps and not (timeline and timeline.artifacts):
+        return "unavailable"
+    if len(artifact_steps) < len(findings):
+        return "partial"
+    return "available"

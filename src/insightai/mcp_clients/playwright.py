@@ -1,5 +1,6 @@
 import copy
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,10 @@ _REDACTED_TOOLS = frozenset(
         "browser_network_requests",
     }
 )
+_NAVIGATION_TOOLS = frozenset({"browser_navigate"})
+_DEFAULT_TOOL_TIMEOUT_SECONDS = 60.0
+_MAX_TOOL_TIMEOUT_SECONDS = 300.0
+_DEFAULT_MAX_RUN_MEDIA_BYTES = 512 * 1024 * 1024
 
 # Schemas OpenAI cannot accept even after sanitization (free-form maps, etc.).
 
@@ -222,7 +227,13 @@ def _wrap_evidence_tool(tool: BaseTool, client: "PlaywrightMCP") -> BaseTool:
         return tool
 
     async def _run(*args, _orig=original_async, _name=tool.name, _client=client, **kwargs):
-        result = await _orig(*args, **kwargs)
+        configured_timeout = os.environ.get("INSIGHT_TOOL_TIMEOUT_SECONDS", "60")
+        try:
+            timeout = min(max(float(configured_timeout), 1.0), _MAX_TOOL_TIMEOUT_SECONDS)
+        except ValueError:
+            timeout = _DEFAULT_TOOL_TIMEOUT_SECONDS
+        result = await asyncio.wait_for(_orig(*args, **kwargs), timeout=timeout)
+        await asyncio.to_thread(_enforce_run_media_budget)
         try:
             from insightai.evidence.capture import after_tool
 
@@ -238,6 +249,83 @@ def _wrap_evidence_tool(tool: BaseTool, client: "PlaywrightMCP") -> BaseTool:
     return tool.model_copy(update={"coroutine": _run})
 
 
+def _enforce_run_media_budget() -> None:
+    """Stop a run after its evidence directory exceeds the configured cap."""
+    from insightai.evidence import context as evidence_context
+    from insightai.evidence.session import local_run_dir
+
+    ctx = evidence_context.current()
+    if ctx is None:
+        return
+    raw = os.environ.get("INSIGHT_MAX_RUN_MEDIA_MB", "512")
+    try:
+        max_bytes = int(float(raw) * 1024 * 1024)
+    except ValueError:
+        max_bytes = _DEFAULT_MAX_RUN_MEDIA_BYTES
+    max_bytes = max(1, max_bytes)
+    total = 0
+    try:
+        for path in local_run_dir(ctx.thread_id).rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+                if total > max_bytes:
+                    raise PlaywrightToolError(
+                        f"Run media budget exceeded ({max_bytes} bytes)"
+                    )
+    except OSError:
+        return
+
+
+def _wrap_target_navigation_tool(tool: BaseTool) -> BaseTool:
+    """Validate requested browser destinations immediately before navigation."""
+    if tool.name not in _NAVIGATION_TOOLS or tool.coroutine is None:
+        return tool
+    original_async = tool.coroutine
+
+    async def _run(*args, _orig=original_async, **kwargs):
+        from insightai.evidence import context as evidence_context
+        from insightai.target_policy import TargetPolicyError, validate_target_url
+        from urllib.parse import urlsplit
+
+        url = kwargs.get("url")
+        if url is None and args and isinstance(args[0], dict):
+            url = args[0].get("url")
+        if not isinstance(url, str):
+            raise ValueError("browser_navigate requires a URL string")
+        host = (urlsplit(url).hostname or "").lower()
+        try:
+            await asyncio.to_thread(validate_target_url, url)
+        except TargetPolicyError:
+            _log_navigation_policy("blocked", host)
+            raise
+        _log_navigation_policy("allowed", host)
+        return await _orig(*args, **kwargs)
+
+    return tool.model_copy(update={"coroutine": _run})
+
+
+def _log_navigation_policy(decision: str, host: str) -> None:
+    """Audit a navigation decision without persisting paths or query strings."""
+    try:
+        from insightai.evidence import context as evidence_context
+        from insightai.evidence.timeline import emit_event
+
+        ctx = evidence_context.current()
+        if ctx is not None:
+            emit_event(
+                ctx.thread_id,
+                "target_policy",
+                f"Browser target {decision}",
+                step=ctx.step,
+                detail=host[:255],
+                status=decision,
+            )
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug("Target policy audit skipped", exc_info=True)
+
+
 def _openai_compatible_tools(
     tools: list[BaseTool], client: "PlaywrightMCP | None" = None
 ) -> list[BaseTool]:
@@ -251,6 +339,7 @@ def _openai_compatible_tools(
         tool = _redact_network_tool(tool)
         tool = _wrap_snapshot_tool(tool)
         tool = _wrap_filename_tool(tool)
+        tool = _wrap_target_navigation_tool(tool)
         if client is not None:
             tool = _wrap_evidence_tool(tool, client)
         compatible.append(tool)
@@ -341,7 +430,23 @@ class PlaywrightMCP:
                 f"Start MCP with: {self.start_hint()}"
             )
         try:
-            result = await self.adapter.client.call_tool(name, arguments or {})
+            args = arguments or {}
+            if name == "browser_navigate":
+                from insightai.target_policy import validate_target_url
+
+                target = args.get("url")
+                if not isinstance(target, str):
+                    raise PlaywrightToolError("browser_navigate requires a URL string")
+                await asyncio.to_thread(validate_target_url, target)
+            configured_timeout = os.environ.get("INSIGHT_TOOL_TIMEOUT_SECONDS", "60")
+            try:
+                timeout = min(max(float(configured_timeout), 1.0), _MAX_TOOL_TIMEOUT_SECONDS)
+            except ValueError:
+                timeout = _DEFAULT_TOOL_TIMEOUT_SECONDS
+            result = await asyncio.wait_for(
+                self.adapter.client.call_tool(name, args), timeout=timeout
+            )
+            await asyncio.to_thread(_enforce_run_media_budget)
         except Exception as exc:
             detail = str(exc).strip() or type(exc).__name__
             # Keep message ASCII-safe for Windows consoles; drop box-drawing noise.

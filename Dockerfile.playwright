@@ -1,0 +1,13 @@
+# Microsoft publishes a headless Chromium MCP image with browser dependencies.
+# Override this build arg with a pinned image tag for reproducible deployments.
+ARG PLAYWRIGHT_MCP_IMAGE=mcr.microsoft.com/playwright/mcp:latest
+FROM ${PLAYWRIGHT_MCP_IMAGE}
+
+# The MCP image includes Playwright. Install its ffmpeg build at image-build
+# time so video capture does not need to download binaries when the service starts.
+USER root
+WORKDIR /app
+RUN npx playwright install ffmpeg
+
+USER node
+WORKDIR /home/node
