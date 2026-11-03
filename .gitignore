@@ -14,3 +14,4 @@ storage-state-*.json
 .neon
 node_modules/
 .agents
+playwright/

@@ -2,11 +2,12 @@
 
 Insight AI Agent is a LangGraph application that takes a URL and a bug description, plans how to reproduce the issue in a real browser, runs that plan through Playwright MCP, and produces a structured QA report. Work stays in the browser: navigation, snapshots, clicks, typing, console, and network—no code-change recommendations in the execution path.
 
-Evidence (screenshots, video, console/network/snapshot logs, timeline events) and a full run summary (plan, findings, timeline, report) are persisted to Neon Postgres and Object Storage via SQLAlchemy.
+Evidence (screenshots, video, console/network/snapshot logs, timeline events) and a full run summary (plan, findings, timeline, report) can be persisted to Neon Postgres and Object Storage via SQLAlchemy when configured.
 
 **Programmatic entry point:** [`InsightAgent`](src/insightai/agent.py) (`arun` / `acontinue`).  
 **Studio entry point:** graph id `insightaiagent` via [`insightaiagent_graph.py`](src/insightai/insightaiagent_graph.py).  
 **FastAPI integration notes:** [`docs/FASTAPI_HANDOFF.md`](docs/FASTAPI_HANDOFF.md).  
+**MVP scope and deployment assumptions:** [`docs/PRODUCT_SCOPE.md`](docs/PRODUCT_SCOPE.md).
 
 ## Pipeline
 
@@ -85,6 +86,11 @@ Outcomes:
 
 - **`NeedsLogin`** — paused for human Continue (`thread_id`, `message`, `login_url`, `origin`, `auth_profile_id`)
 - **`InsightResult`** — terminal state (`report`, `plan`, `step_findings`, `timeline`, `error`, `completed`, `ok`)
+
+Terminal results expose `run_status` (`completed`, `failed`, `cancelled`, or `unknown`),
+`evidence_status` (`available`, `partial`, `unavailable`, or `unknown`), and a report
+`verdict` (`bug_confirmed`, `not_reproduced`, or `inconclusive`). The verdict is based
+on browser evidence; infrastructure failure is represented separately by `error`.
 
 Never put passwords, cookies, or storage-state JSON in `arun` / `acontinue` payloads — validation rejects those keys.
 
@@ -173,42 +179,72 @@ Playwright integration: `PlaywrightMCP` talks to `http://localhost:8931/mcp` (or
 
 ## Requirements
 
-- Python ≥ 3.11
+- Docker Desktop (recommended, with Docker Compose), or for local development: `uv` and Node.js ≥ 20
 - OpenAI API key
-- Node.js (for Playwright MCP via `npx`)
-- Neon Postgres (`DATABASE_URL`) for runs, logs, timeline, and auth sessions
+- Neon Postgres (`DATABASE_URL`) — optional; enables persisted runs, logs, timelines, and auth sessions
 - Optional: Neon Object Storage (`AWS_*` S3-compatible vars) for screenshot/video uploads
 - Optional: LangSmith for tracing
 
-## Setup
+## Quick start (Docker Desktop)
 
-Install dependencies (uv recommended):
+This is the recommended path for a fresh checkout. It runs the graph server and browser MCP in separate containers.
 
 ```powershell
-uv sync
+git clone https://github.com/c-blanding/InsightAIAgent.git
+cd InsightAIAgent
+Copy-Item .env.example .env
+# Edit .env and set OPENAI_API_KEY. DATABASE_URL is optional.
+docker compose up --build
 ```
 
-Copy environment variables:
+Open [LangSmith Studio connected to the local server](https://smith.langchain.com/studio/?baseUrl=http://localhost:2024) and sign in if prompted. Studio is the web UI; the graph server itself is running locally in Docker. Stop the services with `Ctrl+C` or `docker compose down`.
+
+`DATABASE_URL` is optional. Without it, the agent can run but run summaries, logs, timelines, and saved auth sessions are not persisted. `AWS_*` object-storage values are also optional; configure them with `DATABASE_URL` to durably upload screenshots and video. Neon tables are created on first use.
+
+## Local development setup (Windows PowerShell)
+
+Requirements: `uv` and Node.js 20 or newer. Python 3.12 is selected by `.python-version` and installed by uv when needed. Run the bootstrap script from the repository root:
 
 ```powershell
-copy .env.example .env
+.\scripts\setup.ps1
 ```
 
-Set at least `OPENAI_API_KEY` and `DATABASE_URL` in `.env`. Prefer the pooled Neon URL for app traffic and `DATABASE_URL_UNPOOLED` for schema/DDL. See `.env.example` for auth, Object Storage, and Playwright MCP options.
+The script creates `.env` from `.env.example` only when `.env` does not already exist, then installs the locked Python dependencies with `uv sync`. Set `OPENAI_API_KEY` in `.env` before starting the agent. Add `DATABASE_URL` if you want persistent run data. Keep `.env` private; it is ignored by Git.
 
-Start Playwright MCP in a separate terminal (headed browser by default). All
-snapshots, video, and traces stay under `.playwright-mcp` (or `INSIGHT_MEDIA_DIR`).
-Video also needs Playwright's ffmpeg binary once:
+#### Install with pip instead of uv
+
+`uv` is recommended because it installs from `uv.lock`, but pip can install the project from `pyproject.toml`. With Python 3.12 and Node.js 20 or newer installed, run:
 
 ```powershell
-npx playwright install ffmpeg
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Set `OPENAI_API_KEY` in `.env`, then verify the actual entry point imports:
+
+```powershell
+python -c "import insightai.main; print('Main module import OK')"
+```
+
+The pip install uses the dependency version ranges in `pyproject.toml`; it does not enforce the exact versions recorded in `uv.lock`. The `scripts/setup.ps1` helper currently uses uv, so follow these commands directly when setting up with pip.
+
+Start Playwright MCP in one terminal and leave it running:
+
+```powershell
 .\scripts\start-playwright-mcp.bat
 ```
 
-Or manually:
+In a second terminal, start LangGraph Studio:
 
 ```powershell
-npx @playwright/mcp@latest --port 8931 --caps=storage,devtools --isolated --output-dir .playwright-mcp
+# uv setup
+uv run langgraph dev
+
+# pip setup (activate the .venv first in this terminal)
+langgraph dev
 ```
 
 `--caps=devtools` is required for video. Without it, `browser_start_video` is missing
@@ -217,13 +253,110 @@ to the MCP HTTP URL and point both processes at the same absolute `INSIGHT_MEDIA
 (and Neon `DATABASE_URL` / `AWS_*` for durable evidence). Local files under
 `.playwright-mcp` are removed when the graph finishes and uploads succeed.
 
-Run the LangGraph dev server:
+Browser target policy checks the scheme, embedded credentials, hostname, port, and
+all DNS answers before planning and immediately before `browser_navigate`. Public
+targets must be listed in `INSIGHT_ALLOWED_TARGET_HOSTS`. Non-public IP destinations
+are rejected unless their exact hostname is listed in `INSIGHT_LOCAL_TARGETS`. DNS is
+rechecked on each explicit navigation. Browser-level redirects are not yet blocked
+before Chromium follows them. This is a known limitation of the local, human-supervised
+MVP; run it only against applications you are authorized to test. Revisit network-level
+redirect enforcement before supporting hosted runs against untrusted targets. Per-run
+execution defaults to 15 minutes, MCP calls to 60 seconds, and local evidence to 512 MiB;
+these limits are configurable in `.env.example`.
+
+Open the Studio URL printed by `langgraph dev` (it normally opens automatically; the URL connects the Studio web app to the local server on port 2024), sign in if prompted, and invoke the `insightaiagent` graph. `--caps=devtools` is enabled for video capture. The browser MCP process uses the pinned `@playwright/mcp` version in `scripts/start-playwright-mcp.bat`; update that version intentionally when upgrading the integration.
+
+### Local setup checks
+
+From the repository root, these commands check the Python package import and graph CLI availability without starting a run:
 
 ```powershell
-langgraph dev
+# uv setup
+uv run python -c "from insightai import InsightAgent; print('InsightAgent import OK')"
+uv run python -c "import insightai.main; print('Main module import OK')"
+uv run langgraph --help
+
+# pip setup (activate .venv first)
+python -c "import insightai.main; print('Main module import OK')"
+langgraph --help
+
+node --version
 ```
 
-Use Studio or the local API to invoke **`insightaiagent`**. If Studio cannot reach localhost, allow local network access for LangSmith or run `langgraph dev --tunnel`.
+If startup reports a missing `OPENAI_API_KEY`, fill it in `.env`. Add `DATABASE_URL` if you want persistence. Other optional settings for auth sessions, Object Storage, and tracing are documented in `.env.example`.
+
+### Optional browser cursor overlay
+
+To display an animated pointer and click pulse in the local browser and recordings, set this before starting the MCP process:
+
+```powershell
+$env:INSIGHT_SHOW_BROWSER_CURSOR = "1"
+.\scripts\start-playwright-mcp.bat
+```
+
+Remove the setting to disable it:
+
+```powershell
+Remove-Item Env:INSIGHT_SHOW_BROWSER_CURSOR
+```
+
+### Manual Playwright MCP start
+
+If you do not use the Windows helper script, start the pinned package directly:
+
+```powershell
+npx --yes @playwright/mcp@0.0.84 --port 8931 --caps=storage,devtools --isolated --output-dir .playwright-mcp
+```
+
+For hosted / sidecar deployments set `PLAYWRIGHT_MCP_URL` to the reachable MCP HTTP URL and point both processes at the same absolute `INSIGHT_MEDIA_DIR`.
+
+## Docker Compose (private development deployment)
+
+Compose runs the LangGraph dev server and Playwright MCP as separate containers. MCP is only reachable inside the Compose network; the graph API is bound to localhost on port 2024. Configure `.env` as in the quick start, then run:
+
+```powershell
+docker compose up --build
+```
+
+Open [LangSmith Studio connected to the local server](https://smith.langchain.com/studio/?baseUrl=http://localhost:2024) and sign in if prompted. Stop the stack with `docker compose down`. The `media` volume is temporary run staging; it is not the durable artifact store. To remove the volume too, run:
+
+```powershell
+docker compose down -v
+```
+
+That deletes any staged media that has not been uploaded.
+
+This Compose setup uses `langgraph dev` and is for local or private evaluation. It does not add user authentication or tenant authorization, so do not expose port 2024 publicly as a multiuser service. A public deployment needs an authenticated API, user-scoped run access, and a production job/checkpointing strategy.
+
+## First run with the demo storefront
+
+In a third terminal, serve the included LumenShop sample app:
+
+```powershell
+python -m http.server 5500 --directory src/test_web
+```
+
+In Studio, submit a URL such as `http://host.docker.internal:5500/products.html` when running with Docker Compose, or `http://localhost:5500/products.html` for local development, plus a bug description. See `src/test_web/README.md` for sample scenarios.
+
+To run the included `src/insightai/main.py` entry point directly, start the local Playwright MCP helper and demo storefront in separate terminals, then run:
+
+```powershell
+# uv setup
+uv run python -m insightai.main
+
+# pip setup (activate .venv first)
+python -m insightai.main
+```
+
+This entry point targets `http://localhost:5500/rewards.html`. It needs `OPENAI_API_KEY`, the Playwright MCP server at `http://localhost:8931/mcp`, and the demo storefront at port 5500. `DATABASE_URL` is optional.
+
+## Troubleshooting first setup
+
+- **`uv` is not recognized:** install uv and restart PowerShell so its PATH is refreshed.
+- **Node is missing or too old:** install Node.js 20 or newer; the local Playwright MCP helper uses `npx`.
+- **Missing API key:** set `OPENAI_API_KEY` in `.env`; `DATABASE_URL` is optional. Do not paste credentials into graph input.
+- **Playwright MCP is unreachable:** keep the MCP terminal open, then retry the graph; the default endpoint is `http://localhost:8931/mcp`.
+- **Docker cannot reach the demo site:** use `host.docker.internal` in the URL from the graph container.
 
 ## Database (SQLAlchemy + Neon)
 
@@ -265,7 +398,7 @@ Authenticated tests may use an optional `auth_profile_id`. That name is not a se
 
 **Login wall (Continue button)**
 
-Auth is not requested up front. If a plan step hits a login page, the executor sets `error` to `auth_expired` without completing the step. The graph routes to `wait_for_login`, which calls LangGraph `interrupt` so Studio (or your frontend / `InsightAgent.acontinue`) can show **Continue**. Sign in in the headed Playwright window, then Continue with an empty resume or `{ "confirmed": true }` — never the password. After resume the node exports the browser storage state, encrypts it into Postgres, sets `auth_profile_id` if missing, and retries the same step.
+Auth is not requested up front. If a plan step hits a login page, the executor sets `error` to `auth_expired` without completing the step. The graph routes to `wait_for_login`, which calls LangGraph `interrupt` so Studio (or your frontend / `InsightAgent.acontinue`) can show **Continue**. Sign in in the headed Playwright window, then Continue with an empty resume or `{ "confirmed": true }` — never the password. After resume the node exports the browser storage state and retries the same step. When auth storage is configured, it also encrypts the captured state into Postgres for later runs. Without auth storage, the signed-in browser remains available for the current run, but the session is not saved for future runs.
 
 **What must stay out of the graph**
 
@@ -292,11 +425,11 @@ You can still pre-save a session without waiting for a login wall:
 .\.venv\Scripts\python.exe -m insightai.auth.capture revoke --profile my-app
 ```
 
-If `auth_profile_id` is set and a matching unexpired row exists, the shared Playwright client restores it once before the model runs. Changing `AUTH_DATA_KEY` does not re-encrypt old rows; revoke and save again.
+The capture command reads `.env`, saves the session, and then closes its browser when it exits. A later agent run opens a browser and restores the saved session. Set `auth_profile_id` to the same profile name (`my-app` in the example) so it can find that session. For a single run that signs in and then continues using the same open browser, use the graph's Continue login flow instead of the separate capture command. Changing `AUTH_DATA_KEY` does not re-encrypt old rows; revoke and save again.
 
 **Limits**
 
-Playwright storage state covers cookies and `localStorage` only. Sessions that live only in `sessionStorage` are not restored. LumenShop’s login redirects on success but does not set a cookie or `localStorage`, so a capture for that demo is rejected until the site under test actually stores a session. `interrupt` requires a checkpointer (provided by `langgraph dev` / Studio, or by `InsightAgent`).
+Playwright storage state covers cookies and `localStorage` only. Sessions that live only in `sessionStorage` are not restored. The LumenShop static test fixture sets a demo cookie and `localStorage` marker on successful sign-in so Continue can capture it. `interrupt` requires a checkpointer (provided by `langgraph dev` / Studio, or by `InsightAgent`).
 
 ## Run evidence (screenshots, video, console, network, snapshots)
 
@@ -363,6 +496,10 @@ python -m http.server 5500 --directory src/test_web
 See `src/test_web/README.md` for run instructions and sample bug scenarios; `BUGS.md` lists planted defects for scoring runs.
 
 ## Development notes
+
+Run the isolated agent contract checks with `python -m unittest discover -s tests`.
+Existing package-local auth and evidence checks can be run with
+`python -m unittest discover -s src -p 'test_*.py'`.
 
 - Default chat model: `gpt-4o` in `src/insightai/utils/model.py` (override with `OPENAI_MODEL`).
 - Do not add a top-level Python package named `mcp` under the agent source tree; it shadows the official MCP SDK. This repo uses `mcp_clients/`.

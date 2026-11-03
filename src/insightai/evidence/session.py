@@ -14,7 +14,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 from langchain_core.runnables import RunnableConfig
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _THREAD_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _DEFAULT_THREAD_ID = "local"
 _VIDEO_WAIT_SECONDS = 30.0
-_STALE_MEDIA_SECONDS = 3600
+_DEFAULT_MEDIA_RETENTION_SECONDS = 3600
 # Relative to MCP --output-dir / INSIGHT_MEDIA_DIR (not an absolute path).
 _VIDEO_REL = "run.webm"
 
@@ -73,9 +73,15 @@ def _video_rel(thread_id: str) -> str:
 
 def _sweep_stale_media() -> None:
     root = media_dir()
+    try:
+        retention_seconds = max(
+            0, int(os.environ.get("INSIGHT_MEDIA_RETENTION_SECONDS", "3600"))
+        )
+    except ValueError:
+        retention_seconds = _DEFAULT_MEDIA_RETENTION_SECONDS
     runs = root / "runs"
     if runs.is_dir():
-        cutoff = time.time() - _STALE_MEDIA_SECONDS
+        cutoff = time.time() - retention_seconds
         for path in runs.iterdir():
             try:
                 if path.is_dir() and path.stat().st_mtime < cutoff:
@@ -84,7 +90,7 @@ def _sweep_stale_media() -> None:
                 continue
     # Loose MCP defaults (video-*.webm / traces) left at media root.
     if root.is_dir():
-        cutoff = time.time() - _STALE_MEDIA_SECONDS
+        cutoff = time.time() - retention_seconds
         for path in root.iterdir():
             try:
                 if (
@@ -236,8 +242,25 @@ async def _wait_for_video_file(
     return await asyncio.to_thread(_find_video_file, preferred, run_dir)
 
 
-async def session_for(thread_id: str | None) -> PlaywrightMCP:
-    """Open or reuse the Playwright MCP client for this thread and start video."""
+@overload
+async def session_for(thread_id: str | None) -> PlaywrightMCP: ...
+
+
+@overload
+async def session_for(
+    thread_id: str | None, *, with_status: Literal[True]
+) -> tuple[PlaywrightMCP, bool]: ...
+
+
+async def session_for(
+    thread_id: str | None, *, with_status: bool = False
+) -> PlaywrightMCP | tuple[PlaywrightMCP, bool]:
+    """Open or reuse the Playwright MCP client for this thread and start video.
+
+    When ``with_status`` is true, also return whether this call created a new
+    browser session. Callers can use that to restore a page after a process
+    restart without navigating away from a browser that is already in use.
+    """
     key = normalize_thread_id(thread_id)
 
     await asyncio.to_thread(_sweep_stale_media)
@@ -245,7 +268,7 @@ async def session_for(thread_id: str | None) -> PlaywrightMCP:
     async with _lock:
         held = _sessions.get(key)
         if held is not None and held.client._entered and not held.releasing:
-            return held.client
+            return (held.client, False) if with_status else held.client
 
         run_dir = local_run_dir(key)
         await asyncio.to_thread(media_dir().mkdir, parents=True, exist_ok=True)
@@ -280,7 +303,7 @@ async def session_for(thread_id: str | None) -> PlaywrightMCP:
                 client.url,
                 client.start_hint(),
             )
-            return client
+            return (client, True) if with_status else client
 
         try:
             await client.call_mcp(
@@ -309,7 +332,7 @@ async def session_for(thread_id: str | None) -> PlaywrightMCP:
                 exc_info=True,
             )
 
-        return client
+        return (client, True) if with_status else client
 
 
 async def apply_auth_if_needed(thread_id: str | None, profile_id: str, url: str) -> None:

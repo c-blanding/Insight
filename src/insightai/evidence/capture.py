@@ -138,14 +138,13 @@ async def capture_screenshot(client: PlaywrightMCP, *, tool_name: str) -> dict[s
         logger.warning("Screenshot failed after %s", tool_name)
         return None
     object_key = rel.replace("\\", "/")
-    # Keep the PNG on disk until graph release; always attach a pointer so
-    # step_findings can reference it for the rest of the run / report.
+    # Keep the PNG on disk until graph release. Only expose a durable object
+    # pointer when the object-storage upload succeeds.
     artifact = {
         "kind": "screenshot",
         "bucket": SCREENSHOT_BUCKET,
         "object_key": object_key,
     }
-    evidence_context.record_artifact(artifact)
     uploaded = await asyncio.to_thread(
         upload_file,
         path,
@@ -176,6 +175,8 @@ async def capture_screenshot(client: PlaywrightMCP, *, tool_name: str) -> dict[s
             "Screenshot kept locally for step_findings / end-of-run upload: %s",
             path,
         )
+        return None
+    evidence_context.record_artifact(artifact)
     return artifact
 
 

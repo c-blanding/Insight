@@ -1,7 +1,7 @@
 [project]
 name = "insightaiagent"
 version = "0.1.0"
-description = "Add your description here"
+description = "LangGraph agent for browser-based QA reproduction and evidence reports"
 readme = "README.md"
 authors = [
     { name = "c-blanding", email = "b.blanding90@yahoo.com" }
