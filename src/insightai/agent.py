@@ -27,7 +27,7 @@ from langgraph.types import Command
 
 from insightai.evidence.session import normalize_thread_id, release
 from insightai.runtime_paths import playwright_mcp_url
-from insightai.utils.edges import insight_after_execute
+from insightai.utils.edges import insight_after_execute, insight_after_login
 from insightai.utils.nodes import create_plan, execute_plan, finalize_report, wait_for_login
 from insightai.utils.objects import (
     Plan,
@@ -149,7 +149,11 @@ def build_graph(*, checkpointer: BaseCheckpointSaver | None = None):
         insight_after_execute,
         ["wait_for_login", "execute_plan", "finalize_report"],
     )
-    builder.add_edge("wait_for_login", "execute_plan")
+    builder.add_conditional_edges(
+        "wait_for_login",
+        insight_after_login,
+        ["execute_plan", "finalize_report"],
+    )
     builder.add_edge("finalize_report", END)
     return builder.compile(checkpointer=checkpointer)
 

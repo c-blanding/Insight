@@ -12,6 +12,7 @@ class InsightGraphState(TypedDict):
     url: str
     login_url: NotRequired[Optional[str]]
     auth_profile_id: NotRequired[Optional[str]]
+    auth_session_persisted: NotRequired[Optional[bool]]
     expected_behavior: NotRequired[Optional[str]]
     plan: NotRequired[Plan]
     current_step: NotRequired[int]

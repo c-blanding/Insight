@@ -34,9 +34,20 @@ uv run python -c "import insightai.main; print('Main module import OK')"
 if ($LASTEXITCODE -ne 0) {
     throw "The main module import check failed."
 }
-uv run langgraph --help | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "The LangGraph CLI check failed."
+# langgraph --help includes emoji; force UTF-8 so Windows cp1252 consoles do not fail
+$prevPythonIoEncoding = $env:PYTHONIOENCODING
+$env:PYTHONIOENCODING = "utf-8"
+try {
+    uv run langgraph --help | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "The LangGraph CLI check failed."
+    }
+} finally {
+    if ($null -eq $prevPythonIoEncoding) {
+        Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue
+    } else {
+        $env:PYTHONIOENCODING = $prevPythonIoEncoding
+    }
 }
 
 Write-Host "Setup complete. Before running, set OPENAI_API_KEY in .env. DATABASE_URL is optional and enables persistence."

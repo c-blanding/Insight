@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
 import time
@@ -111,15 +112,16 @@ def _sweep_stale_media() -> None:
 
 
 def _cleanup_run_dir(run_dir: Path) -> None:
-    shutil.rmtree(run_dir, ignore_errors=True)
+    try:
+        shutil.rmtree(run_dir)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Failed to remove run media directory %s", run_dir, exc_info=True)
 
 
 def _upload_pending_screenshots(run_dir: Path, thread_id: str) -> tuple[list[dict[str, Any]], bool]:
-    """Upload PNGs still on disk; delete each after a successful upload.
-
-    Returns ``(uploaded_artifacts, still_pending)``. ``still_pending`` is True when
-    at least one local PNG could not be uploaded (keep the run dir for retry).
-    """
+    """Upload PNGs still on disk; terminal cleanup removes any upload failures."""
     uploaded: list[dict[str, Any]] = []
     still_pending = False
     if not run_dir.is_dir():
@@ -412,18 +414,22 @@ async def release(thread_id: str | None, *, finished: bool = True) -> dict[str, 
     key = normalize_thread_id(thread_id)
     async with _lock:
         held = _sessions.pop(key, None)
-        if held is None:
-            return None
-        held.releasing = True
+        if held is not None:
+            held.releasing = True
+    if held is None:
+        if finished:
+            # A session can fail before it is registered (for example, while
+            # starting the MCP client), after its run directory was created.
+            await asyncio.to_thread(_cleanup_run_dir, local_run_dir(key))
+        return None
 
     artifact: dict[str, Any] | None = None
     local_video = held.video_path
     run_dir = local_run_dir(key)
-    screenshots_pending = False
     try:
         if finished:
             # Refs already live on step_findings; flush any local PNGs now.
-            pending, screenshots_pending = await asyncio.to_thread(
+            pending, _ = await asyncio.to_thread(
                 _upload_pending_screenshots, run_dir, key
             )
             if pending:
@@ -520,10 +526,9 @@ async def release(thread_id: str | None, *, finished: bool = True) -> dict[str, 
         except Exception:
             logger.warning("Failed to stop Playwright MCP for thread %s", key, exc_info=True)
         if finished:
-            exists = await asyncio.to_thread(local_video.exists)
-            video_ok = artifact is not None or not held.video_started or not exists
-            if video_ok and not screenshots_pending:
-                await asyncio.to_thread(_cleanup_run_dir, run_dir)
+            # Run media is temporary staging, including when evidence uploads
+            # fail. Keep login-interrupted sessions intact via finished=False.
+            await asyncio.to_thread(_cleanup_run_dir, run_dir)
         try:
             from insightai.evidence.timeline import EVENT_SESSION_END, emit_event
 

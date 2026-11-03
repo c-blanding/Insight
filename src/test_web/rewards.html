@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LumenShop — Rewards</title>
+    <link rel="stylesheet" href="/css/styles.css" />
+    <script>
+      const staticPage = window.location.pathname.endsWith(".html");
+      const rewardsPath = staticPage ? "/rewards.html" : "/rewards";
+      const loginPath = staticPage ? "/login.html" : "/login";
+      const hasDemoSession = document.cookie
+        .split(";")
+        .some((cookie) => cookie.trim() === "lumenshop_demo_session=authenticated");
+      if (!hasDemoSession) {
+        window.location.replace(
+          `${loginPath}?returnTo=${encodeURIComponent(rewardsPath)}`
+        );
+      }
+      document.addEventListener("DOMContentLoaded", () => {
+        if (!staticPage) return;
+        document.querySelectorAll("[data-static-route]").forEach((link) => {
+          link.href += ".html";
+        });
+      });
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container nav">
+        <a class="brand" href="/">LumenShop</a>
+        <button class="menu-toggle" type="button" data-menu-toggle>Menu</button>
+        <ul class="nav-links" data-nav-links>
+          <li><a href="/">Home</a></li>
+          <li><a href="/products" data-static-route>Products</a></li>
+          <li><a href="/rewards" data-static-route aria-current="page">Rewards</a></li>
+          <li><a href="/cart" data-static-route>Cart <span class="cart-badge" data-cart-count>0</span></a></li>
+          <li><button class="btn btn-secondary" type="button" data-sign-out>Sign out</button></li>
+        </ul>
+      </div>
+    </header>
+
+    <main class="container section">
+      <div class="section-header">
+        <div>
+          <h2>Member rewards</h2>
+          <p>Redeem your points for savings on your next order.</p>
+        </div>
+      </div>
+
+      <div class="panel" style="max-width: 560px">
+        <p class="muted">Available points</p>
+        <p class="price"><span data-rewards-balance>250</span> points</p>
+        <div class="alert hidden" data-rewards-alert></div>
+        <button class="btn btn-primary" type="button" data-redeem-points>
+          Redeem 100 points
+        </button>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="container">© LumenShop test store — not a real shop.</div>
+    </footer>
+    <script src="/js/app.js"></script>
+  </body>
+</html>

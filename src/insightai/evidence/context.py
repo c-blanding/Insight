@@ -16,6 +16,7 @@ class StepEvidenceContext:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     network_pulled: bool = False
     console_pulled: bool = False
+    login_wall: bool = False
 
 
 _current: ContextVar[StepEvidenceContext | None] = ContextVar(
@@ -72,6 +73,18 @@ def take_artifacts() -> list[dict[str, Any]]:
     items = list(ctx.artifacts)
     ctx.artifacts.clear()
     return items
+
+
+def mark_login_wall() -> None:
+    """Record that the live page looks like a sign-in wall."""
+    ctx = _current.get()
+    if ctx is not None:
+        ctx.login_wall = True
+
+
+def login_wall_seen() -> bool:
+    ctx = _current.get()
+    return bool(ctx and ctx.login_wall)
 
 
 def clear_step() -> None:

@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 
-from insightai.utils.edges import execute_plan_edge
+from insightai.utils.edges import execute_after_login, execute_plan_edge
 from insightai.utils.nodes import execute_plan, wait_for_login
 from insightai.utils.states import InsightGraphState
 
@@ -19,6 +19,10 @@ builder.add_conditional_edges(
     execute_plan_edge,
     ["wait_for_login", "execute_plan", END],
 )
-builder.add_edge("wait_for_login", "execute_plan")
+builder.add_conditional_edges(
+    "wait_for_login",
+    execute_after_login,
+    ["execute_plan", END],
+)
 
 graph = builder.compile()

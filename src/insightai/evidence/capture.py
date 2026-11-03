@@ -323,12 +323,16 @@ async def after_tool(
     except Exception:
         logger.debug("timeline tool event skipped", exc_info=True)
 
+    text = tool_result_text(result)
+    if looks_like_login_page(text):
+        # Prefer pausing for human login over treating later infra noise as a
+        # terminal step failure (which would skip wait_for_login).
+        evidence_context.mark_login_wall()
+        return
+
     if tool_name not in _SCREENSHOT_AFTER and tool_name not in _NETWORK_AFTER:
         return
     if _tool_failed(result):
-        return
-    text = tool_result_text(result)
-    if looks_like_login_page(text):
         return
 
     if tool_name in _SCREENSHOT_AFTER:

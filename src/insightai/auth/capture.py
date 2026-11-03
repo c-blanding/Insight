@@ -20,6 +20,8 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from insightai.auth.crypto import generate_data_key
 from insightai.auth.storage_state import StorageStateError, has_session_data, normalize_origin, scope_storage_state
 from insightai.auth.store import (
@@ -30,7 +32,9 @@ from insightai.auth.store import (
     save_session,
 )
 from insightai.mcp_clients.playwright import PlaywrightMCP, PlaywrightToolError
-from insightai.runtime_paths import absolute_path
+from insightai.runtime_paths import REPO_ROOT, absolute_path
+
+load_dotenv(REPO_ROOT / ".env")
 
 
 def _unlink_quiet(path: Path) -> None:
@@ -85,16 +89,18 @@ async def _save(args: argparse.Namespace) -> None:
             await playwright.call_mcp("browser_navigate", {"url": login_url})
             print(
                 f"Opened {login_url}.\n"
-                "Sign in in the Playwright browser window, then press Enter here.",
+                "Sign in in the Playwright browser window, then type y and press Enter here.",
                 flush=True,
             )
             try:
-                input()
+                confirmation = input().strip().lower()
             except EOFError as exc:
                 raise AuthStoreError(
                     "auth_capture",
                     "Sign-in was not confirmed",
                 ) from exc
+            if confirmation not in {"", "y", "yes"}:
+                raise AuthStoreError("auth_cancelled", "Sign-in was not confirmed")
             await playwright.call_mcp(
                 "browser_storage_state",
                 {"filename": str(absolute_path(capture_path))},

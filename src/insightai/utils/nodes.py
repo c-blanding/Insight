@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -23,7 +24,7 @@ from insightai.evidence.session import (
     thread_id_from_config,
 )
 from insightai.evidence import context as evidence_context
-from insightai.evidence.capture import capture_console
+from insightai.evidence.capture import capture_console, looks_like_login_page
 from insightai.mcp_clients.playwright import PlaywrightToolError
 from insightai.utils.edges import AUTH_EXPIRED
 from insightai.utils.model import llm
@@ -262,7 +263,22 @@ async def execute_plan(
         await release(thread_id, finished=True)
         return _stopped(str(exc), exc.code)
     except PlaywrightToolError as exc:
+        login_wall = evidence_context.login_wall_seen()
         evidence_context.clear_step()
+        if login_wall:
+            return {
+                "step_findings": [
+                    StepFindings(
+                        findings="Login page detected during browser automation.",
+                        error=AUTH_EXPIRED,
+                    )
+                ],
+                "plan": plan,
+                "completed": False,
+                "error": AUTH_EXPIRED,
+                "login_url": await _current_page_url(playwright, url),
+                "tools_turns": tools_turns + 1,
+            }
         await release(thread_id, finished=True)
         return _stopped(str(exc), exc.code)
 
@@ -292,10 +308,27 @@ async def execute_plan(
     except Exception:
         pass
 
+    login_wall = evidence_context.login_wall_seen() or looks_like_login_page(
+        "\n".join(
+            part
+            for part in (
+                findings.findings,
+                findings.page_snapshot,
+                findings.error,
+            )
+            if isinstance(part, str)
+        )
+    )
+    page_url = await _current_page_url(playwright, url)
+    if not login_wall and "login" in page_url.lower():
+        login_wall = True
     harness_artifacts = evidence_context.take_artifacts()
     evidence_context.clear_step()
+    if login_wall and (findings.error or "").strip() != AUTH_EXPIRED:
+        # Infra tool noise (path/mkdir failures, etc.) must not skip the login pause.
+        findings = findings.model_copy(update={"error": AUTH_EXPIRED})
     if (findings.error or "").strip() == AUTH_EXPIRED:
-        login_url = await _current_page_url(playwright, url)
+        login_url = page_url
         harness_artifacts = [
             a for a in harness_artifacts if a.get("kind") != "screenshot"
         ]
@@ -413,14 +446,42 @@ async def wait_for_login(
         await release(thread_id, finished=True)
         return _stopped("Sign-in was cancelled", "auth_cancelled")
 
-    try:
-        await persist_open_browser_session(
-            playwright,
-            profile_id=profile_id,
-            page_url=url,
-        )
-        mark_auth_applied(thread_id, profile_id)
+    session_persisted = True
+    if not playwright.has_tool("browser_storage_state"):
+        # Keep the headed signed-in browser for this run. Closing it used to
+        # open a blank browser on the next execute_plan step with no cookies.
+        session_persisted = False
+    else:
         try:
+            await persist_open_browser_session(
+                playwright,
+                profile_id=profile_id,
+                page_url=url,
+            )
+        except AuthStoreError as exc:
+            auth_storage_configured = bool(
+                os.environ.get("AUTH_DATA_KEY", "").strip()
+                and (
+                    os.environ.get("AUTH_DATABASE_URL", "").strip()
+                    or os.environ.get("DATABASE_URL", "").strip()
+                )
+            )
+            if exc.code != "auth_not_configured" or auth_storage_configured:
+                await release(thread_id, finished=True)
+                return _stopped(str(exc), exc.code)
+            # The headed browser still has the signed-in session. Keep using it
+            # for this run when durable encrypted storage is not configured.
+            session_persisted = False
+        except ConnectionError as exc:
+            await release(thread_id, finished=True)
+            return _stopped(str(exc), "mcp_unreachable")
+        except PlaywrightToolError as exc:
+            await release(thread_id, finished=True)
+            return _stopped(str(exc), exc.code)
+
+    mark_auth_applied(thread_id, profile_id)
+    try:
+        if session_persisted:
             from insightai.evidence.timeline import EVENT_AUTH_SAVED, emit_event
 
             emit_event(
@@ -429,20 +490,23 @@ async def wait_for_login(
                 f"Saved auth profile {profile_id}",
                 detail=profile_id,
             )
-        except Exception:
-            pass
-    except ConnectionError as exc:
-        await release(thread_id, finished=True)
-        return _stopped(str(exc), "mcp_unreachable")
-    except AuthStoreError as exc:
-        await release(thread_id, finished=True)
-        return _stopped(str(exc), exc.code)
-    except PlaywrightToolError as exc:
-        await release(thread_id, finished=True)
-        return _stopped(str(exc), exc.code)
+        else:
+            from insightai.evidence.timeline import EVENT_AUTH_LOGIN, emit_event
+
+            emit_event(
+                thread_id,
+                EVENT_AUTH_LOGIN,
+                "Signed-in browser session is active for this run; configure "
+                "AUTH_DATA_KEY and AUTH_DATABASE_URL (or DATABASE_URL) to save "
+                "it for later runs",
+                detail=profile_id,
+            )
+    except Exception:
+        pass
 
     return {
         "auth_profile_id": profile_id,
+        "auth_session_persisted": session_persisted,
         "error": None,
         "completed": False,
     }

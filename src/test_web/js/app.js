@@ -343,8 +343,16 @@ function initLogin() {
 
     // Intended demo credentials: demo@lumenshop.test / password123
     if (user === "demo@lumenshop.test" && pass === "password123") {
+      // Demo-only client-side session markers for the protected Rewards page.
+      // The cookie is included in Playwright storage state for Continue capture.
+      localStorage.setItem("lumenshop_demo_session_v1", user);
+      document.cookie = "lumenshop_demo_session=authenticated; Path=/; Max-Age=3600; SameSite=Lax";
+      const requestedPath = new URLSearchParams(window.location.search).get("returnTo");
+      const destination = ["/rewards", "/rewards.html"].includes(requestedPath)
+        ? requestedPath
+        : "/account";
       // BUG 14: success redirects to a 404 account route
-      window.location.href = "/account";
+      window.location.href = destination;
       return;
     }
 
@@ -399,3 +407,33 @@ function initAccount() {
 }
 
 document.addEventListener("DOMContentLoaded", initAccount);
+
+// ---------- Protected rewards page ----------
+function initRewardsPage() {
+  const balance = document.querySelector("[data-rewards-balance]");
+  const redeemButton = document.querySelector("[data-redeem-points]");
+  if (!balance || !redeemButton) return;
+
+  let points = Number(balance.textContent);
+  redeemButton.addEventListener("click", () => {
+    if (points < 100) return;
+    // BUG 22: redeeming 100 points deducts 150 from the balance.
+    points -= 150;
+    balance.textContent = String(points);
+    showAlert(
+      document.querySelector("[data-rewards-alert]"),
+      "100 points redeemed successfully.",
+      "success"
+    );
+  });
+
+  document.querySelector("[data-sign-out]")?.addEventListener("click", () => {
+    localStorage.removeItem("lumenshop_demo_session_v1");
+    document.cookie = "lumenshop_demo_session=; Path=/; Max-Age=0; SameSite=Lax";
+    window.location.replace(
+      window.location.pathname.endsWith(".html") ? "/login.html" : "/login"
+    );
+  });
+}
+
+document.addEventListener("DOMContentLoaded", initRewardsPage);
