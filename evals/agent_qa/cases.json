@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "description": "Small browser QA benchmark using the controlled LumenShop fixture.",
+  "cases": [
+    {
+      "id": "products_search_lowercase_mug",
+      "category": "bug",
+      "path": "/products.html",
+      "bug_description": "Searching for mug does not show the Ceramic Travel Mug, even though it is in the catalog.",
+      "expected_behavior": "Searching for mug should show the Ceramic Travel Mug regardless of capitalization.",
+      "expected_verdict": "bug_confirmed",
+      "required_tools": ["browser_navigate", "browser_click"],
+      "path_markers": ["no products match", "ceramic travel mug"]
+    },
+    {
+      "id": "notebook_adds_wrong_product",
+      "category": "bug",
+      "path": "/products.html",
+      "bug_description": "Adding the Dot Grid Notebook to the cart adds a different product.",
+      "expected_behavior": "The cart should contain the Dot Grid Notebook after its Add to cart button is selected.",
+      "expected_verdict": "bug_confirmed",
+      "required_tools": ["browser_navigate", "browser_click"],
+      "path_markers": ["dot grid notebook", "arc desk lamp"]
+    },
+    {
+      "id": "contact_form_false_success",
+      "category": "bug",
+      "path": "/contact.html",
+      "bug_description": "The contact form reports success when sending a message fails.",
+      "expected_behavior": "The page should show an error if the contact request fails, and success only after a successful response.",
+      "expected_verdict": "bug_confirmed",
+      "required_tools": ["browser_navigate", "browser_click"],
+      "path_markers": ["message sent", "could not send", "contact support"]
+    },
+    {
+      "id": "arc_search_works",
+      "category": "no_bug",
+      "path": "/products.html",
+      "bug_description": "Searching for Arc fails to show the Arc Desk Lamp.",
+      "expected_behavior": "Searching for Arc should show the Arc Desk Lamp.",
+      "expected_verdict": "not_reproduced",
+      "required_tools": ["browser_navigate", "browser_click"],
+      "path_markers": ["arc desk lamp"]
+    },
+    {
+      "id": "page_unavailable_inconclusive",
+      "category": "inconclusive",
+      "path": "/eval-fixture-page-that-does-not-exist.html",
+      "bug_description": "The account page fails to show the account details.",
+      "expected_behavior": "The account page should show account details or a clear account-loading error.",
+      "expected_verdict": "inconclusive",
+      "required_tools": ["browser_navigate"],
+      "path_markers": ["404", "not found", "cannot get"]
+    },
+    {
+      "id": "rewards_requires_login",
+      "category": "auth_recovery",
+      "path": "/rewards.html",
+      "bug_description": "Redeeming 100 points reduces the rewards balance by more than 100 points.",
+      "expected_behavior": "After signing in, redeeming 100 points should reduce the displayed balance by exactly 100 points.",
+      "expected_verdict": "bug_confirmed",
+      "expected_verdict_if_paused": "inconclusive",
+      "required_tools": ["browser_navigate"],
+      "path_markers": ["redeem 100 points"],
+      "requires_interactive_login": true
+    }
+  ]
+}
