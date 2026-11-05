@@ -31,10 +31,10 @@ def execute_plan_edge(state: ExecutionState) -> Literal["wait_for_login", "execu
 
 def insight_after_execute(
     state: InsightGraphState,
-) -> Literal["wait_for_login", "execute_plan", "finalize_report"]:
+) -> Literal["wait_for_login", "execute_plan", "assess_browser"]:
     route = after_execute_step(state)  # type: ignore[arg-type]
     if route == "done":
-        return "finalize_report"
+        return "assess_browser"
     return route
 
 
@@ -49,8 +49,16 @@ def after_wait_for_login(
 
 def insight_after_login(
     state: InsightGraphState,
-) -> Literal["execute_plan", "finalize_report"]:
-    return "finalize_report" if after_wait_for_login(state) == "done" else "execute_plan"
+) -> Literal["execute_plan", "assess_browser"]:
+    return "assess_browser" if after_wait_for_login(state) == "done" else "execute_plan"
+
+
+def after_browser_assessment(
+    state: InsightGraphState,
+) -> Literal["diagnose_source", "finalize_report"]:
+    if state.get("github_repo") and state.get("github_commit_sha"):
+        return "diagnose_source"
+    return "finalize_report"
 
 
 def execute_after_login(

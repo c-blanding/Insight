@@ -49,6 +49,45 @@ class Plan(BaseModel):
         )
 
 
+class BrowserAssessment(BaseModel):
+    """Evidence-based summary of the browser reproduction, before code analysis."""
+
+    verdict: Literal["bug_confirmed", "not_reproduced", "inconclusive"] = Field(
+        "inconclusive", description="Verdict supported by browser evidence only"
+    )
+    summary: str = Field("", description="Short summary of the observed browser behavior")
+    key_observations: List[str] = Field(
+        default_factory=list,
+        description="Observed facts with step references; do not include code hypotheses",
+    )
+
+
+class SourceCandidate(BaseModel):
+    """A likely source location, pinned to the tested commit."""
+
+    path: str = Field(description="Repository-relative source path")
+    start_line: int = Field(ge=1, description="First relevant line")
+    end_line: int = Field(ge=1, description="Last relevant line")
+    commit_sha: str = Field(description="Immutable Git commit inspected")
+    confidence: float = Field(ge=0.0, le=1.0)
+    explanation: str = Field(description="Why this location may cause the observed behavior")
+    evidence_steps: List[int] = Field(
+        default_factory=list,
+        description="Browser step numbers that support this hypothesis",
+    )
+
+
+class SourceDiagnosis(BaseModel):
+    """Read-only, evidence-linked code hypotheses; never a confirmed browser verdict."""
+
+    status: Literal["available", "unavailable", "revision_mismatch", "insufficient_evidence"] = (
+        "insufficient_evidence"
+    )
+    summary: str = ""
+    candidates: List[SourceCandidate] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+
+
 class Report(BaseModel):
     report: Optional[str] = Field(None, description="Report of the bug")
     verdict: Literal["bug_confirmed", "not_reproduced", "inconclusive"] = Field(
@@ -60,6 +99,9 @@ class Report(BaseModel):
     )
     evidence_status: Literal["available", "partial", "unavailable", "unknown"] = Field(
         "unknown", description="Availability of persisted browser evidence"
+    )
+    source_diagnosis: Optional[SourceDiagnosis] = Field(
+        None, description="Optional read-only source-code hypotheses"
     )
 
     @property

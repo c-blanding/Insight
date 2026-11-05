@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -25,21 +26,32 @@ from insightai.evidence.session import (
 )
 from insightai.evidence import context as evidence_context
 from insightai.evidence.capture import capture_console, looks_like_login_page
+from insightai.mcp_clients.github import GitHubMCP
 from insightai.mcp_clients.playwright import PlaywrightToolError
 from insightai.utils.edges import AUTH_EXPIRED
 from insightai.utils.model import llm
 from insightai.utils.objects import (
     ArtifactRef,
+    BrowserAssessment,
     Plan,
     Report,
+    SourceDiagnosis,
     StepFindings,
     normalize_report_verdict,
     summarize_evidence,
     summarize_run_status,
 )
-from insightai.utils.prompts import auth_note, execute_plan_prompt, plan_intruction_prompt, report_prompt
+from insightai.utils.prompts import (
+    auth_note,
+    browser_assessment_prompt,
+    execute_plan_prompt,
+    plan_intruction_prompt,
+    report_prompt,
+    source_diagnosis_prompt,
+)
 from insightai.utils.states import CreateGraphState, ExecutionState, InsightGraphState, ReportState
 
+logger = logging.getLogger(__name__)
 
 
 
@@ -537,6 +549,8 @@ def finalize_report(
             expected_behavior=state.get("expected_behavior"),
             url=state.get("url"),
             bug=state.get("bug_description"),
+            browser_assessment=state.get("browser_assessment"),
+            source_diagnosis=state.get("source_diagnosis"),
             timeline=timeline,
             plan_completed=plan_completed,
         )
@@ -546,10 +560,17 @@ def finalize_report(
     report = report.model_copy(
         update={
             "verdict": normalize_report_verdict(
-                report.verdict, run_status, plan_completed
+                (
+                    state["browser_assessment"].verdict
+                    if state.get("browser_assessment")
+                    else report.verdict
+                ),
+                run_status,
+                plan_completed,
             ),
             "run_status": run_status,
             "evidence_status": evidence_status,
+            "source_diagnosis": state.get("source_diagnosis"),
         }
     )
 
@@ -575,4 +596,186 @@ def finalize_report(
         "run_status": run_status,
         "evidence_status": evidence_status,
     }
+
+
+async def assess_browser(state: InsightGraphState, config: RunnableConfig) -> InsightGraphState:
+    """Summarize browser evidence and establish the verdict before code analysis."""
+    findings = state.get("step_findings") or []
+    safe_findings = [
+        redact_secrets(item.model_dump()) if hasattr(item, "model_dump") else redact_secrets(item)
+        for item in findings
+    ]
+    plan = state.get("plan")
+    timeline = state.get("timeline")
+    if timeline is None:
+        try:
+            from insightai.evidence.timeline import assemble_timeline
+
+            timeline = assemble_timeline(thread_id_from_config(config))
+        except Exception:
+            timeline = None
+
+    try:
+        assessment_llm = llm.with_structured_output(BrowserAssessment)
+        assessment = await assessment_llm.ainvoke(
+            [
+                SystemMessage(
+                    content=browser_assessment_prompt.format(
+                        url=state.get("url"),
+                        bug=state.get("bug_description"),
+                        expected_behavior=state.get("expected_behavior"),
+                        step_findings=safe_findings,
+                        timeline=timeline,
+                        plan_completed=bool(plan and plan.completed),
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "url": state.get("url"),
+                            "bug_description": state.get("bug_description"),
+                            "expected_behavior": state.get("expected_behavior"),
+                            "plan": plan.model_dump() if plan else None,
+                            "plan_completed": bool(plan and plan.completed),
+                            "step_findings": safe_findings,
+                            "timeline": timeline.model_dump() if timeline else None,
+                            "run_error": state.get("error"),
+                        },
+                        default=str,
+                    )
+                ),
+            ]
+        )
+        if not isinstance(assessment, BrowserAssessment):
+            assessment = BrowserAssessment.model_validate(assessment)
+    except Exception as exc:
+        logger.warning("Browser evidence assessment failed: %s", type(exc).__name__)
+        assessment = BrowserAssessment(
+            verdict="inconclusive",
+            summary="Browser evidence could not be assessed automatically.",
+            key_observations=[],
+        )
+    return {"browser_assessment": assessment, "timeline": timeline}
+
+
+def _validated_source_diagnosis(
+    diagnosis: SourceDiagnosis,
+    expected_sha: str,
+    verified_line_counts: dict[str, int],
+) -> SourceDiagnosis:
+    """Discard citations not verified against the requested commit and safe paths."""
+    candidates = []
+    rejected = False
+    unverified = False
+    for candidate in diagnosis.candidates:
+        path = candidate.path.replace("\\", "/")
+        parts = path.split("/")
+        if (
+            candidate.commit_sha != expected_sha
+            or not path
+            or path.startswith("/")
+            or any(part in {"", ".", ".."} for part in parts)
+            or candidate.end_line < candidate.start_line
+        ):
+            rejected = True
+            continue
+        line_count = verified_line_counts.get(path)
+        if line_count is None or candidate.end_line > line_count:
+            unverified = True
+            continue
+        candidates.append(candidate.model_copy(update={"path": path}))
+
+    if rejected:
+        return diagnosis.model_copy(
+            update={
+                "status": "revision_mismatch",
+                "candidates": candidates,
+                "limitations": [
+                    *diagnosis.limitations,
+                    "One or more source citations did not match the requested commit or a safe repository path.",
+                ],
+            }
+        )
+    if unverified:
+        return diagnosis.model_copy(
+            update={
+                "status": "insufficient_evidence",
+                "candidates": candidates,
+                "limitations": [
+                    *diagnosis.limitations,
+                    "One or more cited files or line ranges could not be verified from the GitHub MCP response at the requested commit.",
+                ],
+            }
+        )
+    if diagnosis.status == "available" and not candidates:
+        return diagnosis.model_copy(update={"status": "insufficient_evidence"})
+    return diagnosis.model_copy(update={"candidates": candidates})
+
+
+async def diagnose_source(state: InsightGraphState) -> InsightGraphState:
+    """Use read-only GitHub MCP tools to find likely code behind browser findings."""
+    repo = (state.get("github_repo") or "").strip()
+    commit_sha = (state.get("github_commit_sha") or "").strip().lower()
+    if not repo or not commit_sha:
+        return {"source_diagnosis": SourceDiagnosis(status="insufficient_evidence")}
+
+    github = None
+    try:
+        github = GitHubMCP(repo=repo, commit_sha=commit_sha)
+        tools = await github.start()
+        diagnosis_agent = create_agent(
+            llm,
+            tools,
+            system_prompt=source_diagnosis_prompt.format(
+                github_repo=repo,
+                github_commit_sha=commit_sha,
+                bug=state.get("bug_description"),
+                browser_assessment=state.get("browser_assessment"),
+                step_findings=[
+                    redact_secrets(item.model_dump())
+                    if hasattr(item, "model_dump")
+                    else redact_secrets(item)
+                    for item in (state.get("step_findings") or [])
+                ],
+            ),
+            response_format=SourceDiagnosis,
+            name="source_diagnosis",
+        )
+        result = await diagnosis_agent.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        content=(
+                            "Investigate likely source locations for this reproduced browser issue. "
+                            "Inspect code at the required commit and return only evidence-supported hypotheses."
+                        )
+                    )
+                ]
+            },
+            {"recursion_limit": 12},
+        )
+        raw_diagnosis = result.get("structured_response")
+        diagnosis = (
+            raw_diagnosis
+            if isinstance(raw_diagnosis, SourceDiagnosis)
+            else SourceDiagnosis.model_validate(raw_diagnosis)
+        )
+        diagnosis = _validated_source_diagnosis(
+            diagnosis, commit_sha, github.verified_line_counts
+        )
+    except Exception as exc:
+        # Code integration failure must not discard a completed browser investigation.
+        logger.warning("GitHub source diagnosis unavailable: %s", exc)
+        diagnosis = SourceDiagnosis(
+            status="unavailable",
+            summary="GitHub source analysis could not be completed.",
+            limitations=[type(exc).__name__],
+        )
+    finally:
+        if github is not None:
+            try:
+                await github.stop()
+            except Exception:
+                logger.warning("Failed to close GitHub MCP client", exc_info=True)
+    return {"source_diagnosis": diagnosis}
 

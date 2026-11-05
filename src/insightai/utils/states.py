@@ -3,7 +3,14 @@ from typing import Annotated, NotRequired, Optional
 
 from typing_extensions import TypedDict
 
-from insightai.utils.objects import Plan, Report, StepFindings, Timeline
+from insightai.utils.objects import (
+    BrowserAssessment,
+    Plan,
+    Report,
+    SourceDiagnosis,
+    StepFindings,
+    Timeline,
+)
 
 
 class InsightGraphState(TypedDict):
@@ -14,6 +21,8 @@ class InsightGraphState(TypedDict):
     auth_profile_id: NotRequired[Optional[str]]
     auth_session_persisted: NotRequired[Optional[bool]]
     expected_behavior: NotRequired[Optional[str]]
+    github_repo: NotRequired[Optional[str]]
+    github_commit_sha: NotRequired[Optional[str]]
     plan: NotRequired[Plan]
     current_step: NotRequired[int]
     max_tools_turns: NotRequired[int]
@@ -24,6 +33,8 @@ class InsightGraphState(TypedDict):
     run_status: NotRequired[str]
     evidence_status: NotRequired[str]
     report: NotRequired[Report]
+    browser_assessment: NotRequired[BrowserAssessment]
+    source_diagnosis: NotRequired[SourceDiagnosis]
     timeline: NotRequired[Timeline]
 
 class CreateGraphState(TypedDict):
@@ -33,6 +44,8 @@ class CreateGraphState(TypedDict):
     expected_behavior: Optional[str]
     max_tools_turns: int = 30
     auth_profile_id: NotRequired[Optional[str]] = None
+    github_repo: NotRequired[Optional[str]] = None
+    github_commit_sha: NotRequired[Optional[str]] = None
 
 
 class ExecutionState(TypedDict):
@@ -61,3 +74,7 @@ class ReportState(TypedDict):
     url: str
     expected_behavior: Optional[str]
     timeline: Timeline
+    browser_assessment: NotRequired[BrowserAssessment]
+    source_diagnosis: NotRequired[SourceDiagnosis]
+    github_repo: NotRequired[Optional[str]]
+    github_commit_sha: NotRequired[Optional[str]]

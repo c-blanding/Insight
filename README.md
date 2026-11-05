@@ -1,6 +1,6 @@
 # Insight AI Agent
 
-Insight AI Agent is a LangGraph application that takes a URL and a bug description, plans how to reproduce the issue in a real browser, runs that plan through Playwright MCP, and produces a structured QA report. Work stays in the browser: navigation, snapshots, clicks, typing, console, and network—no code-change recommendations in the execution path.
+Insight AI Agent is a LangGraph application that takes a URL and a bug description, plans how to reproduce the issue in a real browser, runs that plan through Playwright MCP, and produces a structured QA report. Browser reproduction stays grounded in browser evidence. When a GitHub repository and immutable commit SHA are supplied, an optional read-only diagnosis stage inspects source code and adds likely cause locations to the report; it does not modify code.
 
 Evidence (screenshots, video, console/network/snapshot logs, timeline events) and a full run summary (plan, findings, timeline, report) can be persisted to Neon Postgres and Object Storage via SQLAlchemy when configured.
 
@@ -15,7 +15,9 @@ The main graph **`insightaiagent`** flow:
 
 1. **Create plan** — LLM outputs a structured `Plan`: ordered steps that are browser interactions only (aligned with Playwright MCP tools).
 2. **Execute plan** — A tool-using agent connects to Playwright MCP, opens the URL, works through plan steps, and returns `StepFindings` per step (with screenshots, console/network/snapshot logs, and timeline events). Loops until all steps complete.
-3. **Finalize report** — LLM synthesizes `step_findings`, optional `expected_behavior`, timeline, and plan completion into a `Report`, then upserts a `runs` row.
+3. **Assess browser evidence** — LLM determines the browser verdict from `step_findings`, optional `expected_behavior`, timeline, and plan completion.
+4. **Diagnose source (optional)** — When `github_repo` and `github_commit_sha` are supplied, a read-only GitHub MCP toolset inspects likely source locations at that commit. The browser verdict remains authoritative.
+5. **Finalize report** — LLM combines the browser assessment and optional source hypotheses into a `Report`, then upserts a `runs` row.
 
 Optional side path: if a step hits a login wall (`auth_expired`), **wait_for_login** interrupts for Continue, saves the session, then returns to **execute_plan**. Most runs never enter that node.
 
@@ -36,7 +38,13 @@ execute_plan ◄──────────────┐
   └── done / error
         │
         ▼
-  finalize_report ──► Report + runs upsert
+  assess_browser
+        │
+        ├── GitHub context ──► diagnose_source
+        │                         │
+        └── no GitHub ────────────┤
+                                  ▼
+                          finalize_report ──► Report + runs upsert
         │
         ▼
        END
@@ -116,6 +124,8 @@ Typical Studio or `InsightAgent.arun` input (`CreateGraphState`):
 | `expected_behavior` | Optional; used when writing the final report |
 | `auth_profile_id` | Optional name of a saved browser session. The password is not an input. |
 | `max_tools_turns` | Budget for tool use during a step (default 30, max 200) |
+| `github_repo` | Optional GitHub repository in `owner/name` format for source diagnosis. |
+| `github_commit_sha` | Required with `github_repo`; immutable 40- or 64-character commit SHA for source inspection. |
 
 `thread_id` is **not** graph state — pass it to `arun(..., thread_id=...)` (or let the agent generate one). It keys evidence, Playwright session reuse, and DB rows.
 
@@ -135,7 +145,9 @@ Domain models live in `src/insightai/utils/objects.py`:
 | Model | Role |
 |-------|------|
 | `Plan`, `Steps`, `StepFindings`, `ArtifactRef` | Plan + per-step findings / media refs |
-| `Report` | Final QA write-up |
+| `BrowserAssessment` | Browser-only verdict and evidence summary |
+| `SourceDiagnosis`, `SourceCandidate` | Optional commit-pinned code hypotheses |
+| `Report` | Final QA write-up with optional source diagnosis |
 | `Timeline`, `TimelineEvent`, … | Merged timeline / action-log view |
 | `Run` | Persisted run summary (inputs + plan + findings + timeline + report) |
 
@@ -176,6 +188,10 @@ from insightai import InsightAgent, NeedsLogin
 ```
 
 Playwright integration: `PlaywrightMCP` talks to `http://localhost:8931/mcp` (or `PLAYWRIGHT_MCP_URL`), sanitizes tool schemas for OpenAI, and keeps cookie/storage/evaluate tools off the model tool list.
+
+### Optional GitHub source diagnosis
+
+Provide both `github_repo` (`owner/name`) and `github_commit_sha` to an `InsightAgent` run to enable post-reproduction source diagnosis. Configure `GITHUB_MCP_URL` to an HTTPS GitHub MCP endpoint (HTTP is allowed only on loopback) exposing `get_repository`, `search_code`, `get_commit`, and `get_file_contents` with the expected repository and revision fields. `GITHUB_MCP_TOKEN` is optional and is used only for MCP authentication; credential-like agent input keys are rejected, and the token is never placed in graph state or sent to the model. The agent exposes only this allowlisted read-only toolset, caps tool output, pins file reads and commit lookups to the supplied SHA, and only retains candidate paths and line ranges verified from file responses. Code search results are discovery hints and must be verified by reading the file at that SHA. If GitHub MCP is unavailable or the source revision cannot be verified, browser findings and verdict still return with the diagnosis marked unavailable or mismatched.
 
 ## Requirements
 

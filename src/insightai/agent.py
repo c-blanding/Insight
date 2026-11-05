@@ -27,8 +27,19 @@ from langgraph.types import Command
 
 from insightai.evidence.session import normalize_thread_id, release
 from insightai.runtime_paths import playwright_mcp_url
-from insightai.utils.edges import insight_after_execute, insight_after_login
-from insightai.utils.nodes import create_plan, execute_plan, finalize_report, wait_for_login
+from insightai.utils.edges import (
+    after_browser_assessment,
+    insight_after_execute,
+    insight_after_login,
+)
+from insightai.utils.nodes import (
+    assess_browser,
+    create_plan,
+    diagnose_source,
+    execute_plan,
+    finalize_report,
+    wait_for_login,
+)
 from insightai.utils.objects import (
     Plan,
     Report,
@@ -55,13 +66,14 @@ _FORBIDDEN_STATE_KEYS = frozenset(
         "storageState",
         "access_token",
         "refresh_token",
+        "github_token",
         "api_key",
         "apikey",
     }
 )
 _FORBIDDEN_KEY_RE = re.compile(
     r"(?i)(password|passwd|secret|cookie|authorization|storage.?state|"
-    r"access.?token|refresh.?token|api.?key)"
+    r"token|api.?key)"
 )
 _DEFAULT_MAX_TOOLS_TURNS = 30
 _MAX_TOOLS_TURNS_CAP = 200
@@ -141,19 +153,27 @@ def build_graph(*, checkpointer: BaseCheckpointSaver | None = None):
     builder.add_node("create_plan", create_plan)
     builder.add_node("execute_plan", execute_plan)
     builder.add_node("wait_for_login", wait_for_login)
+    builder.add_node("assess_browser", assess_browser)
+    builder.add_node("diagnose_source", diagnose_source)
     builder.add_node("finalize_report", finalize_report)
     builder.add_edge(START, "create_plan")
     builder.add_edge("create_plan", "execute_plan")
     builder.add_conditional_edges(
         "execute_plan",
         insight_after_execute,
-        ["wait_for_login", "execute_plan", "finalize_report"],
+        ["wait_for_login", "execute_plan", "assess_browser"],
     )
     builder.add_conditional_edges(
         "wait_for_login",
         insight_after_login,
-        ["execute_plan", "finalize_report"],
+        ["execute_plan", "assess_browser"],
     )
+    builder.add_conditional_edges(
+        "assess_browser",
+        after_browser_assessment,
+        ["diagnose_source", "finalize_report"],
+    )
+    builder.add_edge("diagnose_source", "finalize_report")
     builder.add_edge("finalize_report", END)
     return builder.compile(checkpointer=checkpointer)
 
@@ -281,6 +301,33 @@ class InsightAgent:
         if expected_s == "":
             expected_s = None
 
+        github_repo = state.get("github_repo")
+        github_commit_sha = state.get("github_commit_sha")
+        if (github_repo is None) != (github_commit_sha is None):
+            raise InsightInputError(
+                "github_repo and github_commit_sha must be provided together"
+            )
+        if github_repo is not None:
+            if not isinstance(github_repo, str):
+                raise InsightInputError("github_repo must be an owner/name string")
+            github_repo = github_repo.strip()
+            parts = github_repo.split("/")
+            if (
+                len(parts) != 2
+                or not all(parts)
+                or any(part in {".", ".."} for part in parts)
+                or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts)
+            ):
+                raise InsightInputError("github_repo must have the form owner/name")
+        if github_commit_sha is not None:
+            if not isinstance(github_commit_sha, str):
+                raise InsightInputError("github_commit_sha must be a commit SHA")
+            github_commit_sha = github_commit_sha.strip().lower()
+            if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", github_commit_sha):
+                raise InsightInputError(
+                    "github_commit_sha must be a 40- or 64-character hexadecimal SHA"
+                )
+
         auth = state.get("auth_profile_id")
         if auth is not None and not isinstance(auth, str):
             raise InsightInputError("auth_profile_id must be a string or omitted")
@@ -301,6 +348,9 @@ class InsightAgent:
             cleaned["expected_behavior"] = expected_s
         if auth_s is not None:
             cleaned["auth_profile_id"] = auth_s
+        if github_repo is not None:
+            cleaned["github_repo"] = github_repo
+            cleaned["github_commit_sha"] = github_commit_sha
         return cleaned
 
     def _config(
